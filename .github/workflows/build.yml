@@ -83,9 +83,8 @@ jobs:
 
         echo "🗑️ Cleaning up test build artifacts..."
 
-  # === 프로덕션 빌드 및 릴리즈 (릴리즈 생성 시) ===
   build-release:
-    name: Production Build & Release
+    name: Build & Release
     runs-on: windows-latest
     if: github.event_name == 'release'
 
@@ -96,9 +95,8 @@ jobs:
     - name: Extract Version from Tag
       shell: bash
       run: |
-        # 릴리즈 태그에서 버전 추출 (v1.0.0 -> 1.0.0)
         VERSION="${{ github.event.release.tag_name }}"
-        VERSION=${VERSION#v}  # v 접두사 제거
+        VERSION=${VERSION#v}
         echo "RELEASE_VERSION=$VERSION" >> $GITHUB_ENV
         echo "📌 Release Version: $VERSION"
 
@@ -154,7 +152,6 @@ jobs:
     - name: Create Release Package
       shell: msys2 {0}
       run: |
-        # ⭐ 버전이 포함된 폴더명으로 릴리즈 패키지 생성
         PACKAGE_NAME="Unity-Wakatime_v${{ env.RELEASE_VERSION }}"
         echo "📦 Creating release package: $PACKAGE_NAME"
 

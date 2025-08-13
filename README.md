@@ -1,17 +1,17 @@
 <div align="center">
 
-# Unity - WakaTime
-
----
+## Unity - WakaTime
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-skyblue.svg?style=for-the-badge&logo=github)](LICENSE)
 ![GitHub Repo stars](https://img.shields.io/github/stars/snow0406/Unity-Wakatime?style=for-the-badge&logo=github&color=%23ef8d9d)
 
 🎯 Automatic Unity project detection and time tracking for WakaTime
 
+---
+
 </div>
 
-## 🚀 Features
+### 🚀 Features
 
 - **Automatic Detection**: Finds Unity projects automatically
 - **Real-time Monitoring**: Tracks file changes as you code
@@ -19,19 +19,19 @@
 - **System Tray**: Runs quietly in background with right-click menu
 - **Smart Notifications**: Shows project start/stop alerts
 
-## 🔧 System Requirements
+### 🔧 System Requirements
 
 - **OS**: Windows
 - **API key**: WakaTime API KEY (free at wakatime.com)
 
-## 📦 Installation
+### 📦 Installation
 
 1. Go to [Releases](https://github.com/Snow0406/Unity-Wakatime/releases)
 2. Download the latest `Unity-Wakatime_vX.X.X.zip`
 3. Extract to your preferred location
 4. Run `unity_wakatime.exe`
 
-## ⚙️ Setup
+### ⚙️ Setup
 
 1. **Get WakaTime API Key**:
     - Visit https://wakatime.com/api-key

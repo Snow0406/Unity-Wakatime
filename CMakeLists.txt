@@ -34,11 +34,20 @@ if(WIN32)
     )
 
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        set_property(TARGET unity_wakatime PROPERTY WIN32_EXECUTABLE TRUE)
-        target_link_options(unity_wakatime PRIVATE
-                /SUBSYSTEM:WINDOWS
-                /ENTRY:mainCRTStartup
-        )
+        if(MSVC)
+            # MSVC 전용 설정
+            set_property(TARGET unity_wakatime PROPERTY WIN32_EXECUTABLE TRUE)
+            target_link_options(unity_wakatime PRIVATE
+                    /SUBSYSTEM:WINDOWS
+                    /ENTRY:mainCRTStartup
+            )
+        elseif(MINGW)
+            # MinGW 전용 설정
+            target_link_options(unity_wakatime PRIVATE
+                    -Wl,--subsystem,windows
+                    -mwindows
+            )
+        endif()
     endif()
 
     target_link_libraries(unity_wakatime
