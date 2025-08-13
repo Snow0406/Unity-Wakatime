@@ -30,53 +30,58 @@ if(WIN32)
             _WIN32_WINNT=0x0601
             UNICODE=1
             _UNICODE=1
-            NOMINMAX            # min/max 매크로 충돌 방지
-    )
-
-    if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        if(MSVC)
-            # MSVC 전용 설정
-            set_property(TARGET unity_wakatime PROPERTY WIN32_EXECUTABLE TRUE)
-            target_link_options(unity_wakatime PRIVATE
-                    /SUBSYSTEM:WINDOWS
-                    /ENTRY:mainCRTStartup
-            )
-        elseif(MINGW)
-            # MinGW 전용 설정
-            target_link_options(unity_wakatime PRIVATE
-                    -Wl,--subsystem,windows
-                    -mwindows
-            )
-        endif()
-    endif()
-
-    target_link_libraries(unity_wakatime
-            winhttp          # HTTP 클라이언트
-            shell32          # 트레이 아이콘
-            psapi            # 프로세스 정보
-            wbemuuid         # WMI UUID 정의들
-            ole32            # COM 기본 라이브러리
-            oleaut32         # COM 자동화
-            windowscodecs    # WIC PNG 로딩
-            user32           # Windows UI API
+            NOMINMAX
     )
 
     if(MINGW)
         target_link_options(unity_wakatime PRIVATE
                 -static-libgcc
                 -static-libstdc++
+                -static
+                -mwindows
                 -Wl,--enable-stdcall-fixup
         )
+
+        target_link_libraries(unity_wakatime
+                winhttp
+                shell32
+                psapi
+                wbemuuid
+                ole32
+                oleaut32
+                windowscodecs
+                user32
+        )
+    else()
+        # MSVC용 설정
+        target_link_libraries(unity_wakatime
+                winhttp
+                shell32
+                psapi
+                wbemuuid
+                ole32
+                oleaut32
+                windowscodecs
+                user32
+        )
+    endif()
+
+    # Release 모드 설정 (중복 제거 및 정리)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        if(MSVC)
+            # MSVC: Windows 서브시스템 설정
+            set_property(TARGET unity_wakatime PROPERTY WIN32_EXECUTABLE TRUE)
+            target_link_options(unity_wakatime PRIVATE
+                    /SUBSYSTEM:WINDOWS
+                    /ENTRY:mainCRTStartup
+            )
+        elseif(MINGW)
+            # MinGW: 심볼 스트리핑 (크기 최적화)
+            target_link_options(unity_wakatime PRIVATE
+                    -s  # Strip symbols for smaller file size
+            )
+        endif()
     endif()
 endif()
 
 configure_file(${CMAKE_SOURCE_DIR}/logo_32.png ${CMAKE_BINARY_DIR}/logo_32.png COPYONLY)
-
-# 릴리즈 빌드 시 추가 최적화
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    if(MINGW)
-        target_link_options(unity_wakatime PRIVATE
-                -s  # Strip symbols for smaller file size
-        )
-    endif()
-endif()
