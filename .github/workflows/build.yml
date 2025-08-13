@@ -1,0 +1,201 @@
+﻿name: Build Unity WakaTime
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  # === 빌드 테스트 (main 푸시 시) ===
+  build-test:
+    name: Build Test
+    runs-on: windows-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup MinGW
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-ninja
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '3.27'
+
+    - name: Verify Dependencies
+      shell: msys2 {0}
+      run: |
+        echo "🔍 Verifying build environment..."
+        echo "CMake version:"
+        cmake --version
+        echo "GCC version:"
+        gcc --version
+        echo "Build type: $BUILD_TYPE"
+
+    - name: Configure CMake
+      shell: msys2 {0}
+      run: |
+        echo "⚙️ Configuring CMake..."
+        cmake -B build -G "MinGW Makefiles" \
+          -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+          -DCMAKE_CXX_STANDARD=17 \
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+
+    - name: Copy Resources to Build Directory
+      shell: msys2 {0}
+      run: |
+        echo "📁 Copying logo_32.png to build directory..."
+        cp logo_32.png build/
+        echo "✅ Resources copied successfully"
+
+    - name: Build Project (Test Only)
+      shell: msys2 {0}
+      run: |
+        echo "🔨 Building Unity WakaTime (Test Build)..."
+        cmake --build build --config $BUILD_TYPE --parallel 4
+
+    - name: Verify Build Success
+      shell: msys2 {0}
+      run: |
+        echo "✅ Build test completed successfully!"
+        if [ -f "build/unity_wakatime.exe" ]; then
+          echo "📦 Executable created: $(stat -c%s build/unity_wakatime.exe) bytes"
+          echo "🎯 Build test passed - ready for production release!"
+        else
+          echo "❌ Build test failed - executable not found!"
+          exit 1
+        fi
+
+        echo "🗑️ Cleaning up test build artifacts..."
+
+  # === 프로덕션 빌드 및 릴리즈 (릴리즈 생성 시) ===
+  build-release:
+    name: Production Build & Release
+    runs-on: windows-latest
+    if: github.event_name == 'release'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Extract Version from Tag
+      shell: bash
+      run: |
+        # 릴리즈 태그에서 버전 추출 (v1.0.0 -> 1.0.0)
+        VERSION="${{ github.event.release.tag_name }}"
+        VERSION=${VERSION#v}  # v 접두사 제거
+        echo "RELEASE_VERSION=$VERSION" >> $GITHUB_ENV
+        echo "📌 Release Version: $VERSION"
+
+    - name: Setup MinGW
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-ninja
+          mingw-w64-x86_64-7zip
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '3.27'
+
+    - name: Configure CMake (Release Build)
+      shell: msys2 {0}
+      run: |
+        echo "⚙️ Configuring CMake for production release..."
+        cmake -B build -G "MinGW Makefiles" \
+          -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+          -DCMAKE_CXX_STANDARD=17 \
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+
+    - name: Copy Resources to Build Directory
+      shell: msys2 {0}
+      run: |
+        echo "📁 Copying resources for release..."
+        cp logo_32.png build/
+        echo "✅ Release resources copied"
+
+    - name: Build Production Release
+      shell: msys2 {0}
+      run: |
+        echo "🚀 Building Unity WakaTime Production Release v${{ env.RELEASE_VERSION }}..."
+        cmake --build build --config $BUILD_TYPE --parallel 4
+
+    - name: Verify Production Build
+      shell: msys2 {0}
+      run: |
+        if [ -f "build/unity_wakatime.exe" ]; then
+          echo "✅ Production build successful!"
+          echo "📦 Final executable size: $(stat -c%s build/unity_wakatime.exe) bytes"
+        else
+          echo "❌ Production build failed!"
+          exit 1
+        fi
+
+    - name: Create Release Package
+      shell: msys2 {0}
+      run: |
+        # ⭐ 버전이 포함된 폴더명으로 릴리즈 패키지 생성
+        PACKAGE_NAME="Unity-Wakatime_v${{ env.RELEASE_VERSION }}"
+        echo "📦 Creating release package: $PACKAGE_NAME"
+
+        mkdir -p "release-package/$PACKAGE_NAME"
+
+        # 실행 파일과 리소스 복사
+        cp build/unity_wakatime.exe "release-package/$PACKAGE_NAME/"
+        cp build/logo_32.png "release-package/$PACKAGE_NAME/"
+
+        # README 및 추가 파일들 복사 (있으면)
+        [ -f README.md ] && cp README.md "release-package/$PACKAGE_NAME/" || echo "README.md not found, skipping"
+        [ -f LICENSE ] && cp LICENSE "release-package/$PACKAGE_NAME/" || echo "LICENSE not found, skipping"
+
+        echo "📋 Release package contents:"
+        ls -la "release-package/$PACKAGE_NAME/"
+
+        # 패키지 이름을 다음 단계에서 사용할 수 있도록 환경변수로 설정
+        echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+
+    - name: Create ZIP Archive
+      shell: msys2 {0}
+      run: |
+        cd release-package
+        echo "🗜️ Creating ZIP archive: ${{ env.PACKAGE_NAME }}.zip"
+        7z a "${{ env.PACKAGE_NAME }}.zip" "${{ env.PACKAGE_NAME }}/"
+
+        echo "✅ ZIP archive created successfully"
+        echo "📊 Archive details:"
+        ls -lh "${{ env.PACKAGE_NAME }}.zip"
+
+    - name: Upload Release Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PACKAGE_NAME }}
+        path: release-package/${{ env.PACKAGE_NAME }}/
+        retention-days: 90
+
+    - name: Upload ZIP to Release
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        files: release-package/${{ env.PACKAGE_NAME }}.zip
+        name: Unity WakaTime v${{ env.RELEASE_VERSION }}

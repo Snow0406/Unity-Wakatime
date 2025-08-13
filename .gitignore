@@ -1,33 +1,25 @@
-# Prerequisites
-*.d
+# Build directories
+build/
+cmake-build-*/
+release-package/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+# IDE files
+.vscode/
+.idea/
+*.user
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
+# Windows
 *.exe
-*.out
-*.app
-/.idea
+*.dll
+*.pdb
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Temporary files
+*.tmp
+*.log
+wakatime_config.txt
