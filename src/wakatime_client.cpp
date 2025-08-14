@@ -435,6 +435,8 @@ void WakaTimeClient::GetStats(int& sent, int& failed) const {
 
 std::string WakaTimeClient::GetMaskedApiKey() const
 {
+    if (apiKey.empty()) return "[ Not Set ]";
+    if (apiKey.length() <= 8 ) return "****";
     return apiKey.substr(0, 8) + "****" + apiKey.substr(apiKey.length() - 4);
 }
 

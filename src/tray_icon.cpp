@@ -327,7 +327,7 @@ HMENU TrayIcon::CreateContextMenu()
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"🔑 Setup API Key");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    AppendMenuW(menu, MF_STRING, IDM_GITHUB, L"ℹ️ Unity WakaTime v1.0.0");
+    AppendMenuW(menu, MF_STRING, IDM_GITHUB, L"ℹ️ Unity WakaTime v1.0.2");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
