@@ -125,6 +125,12 @@ private:
 public:
     WakaTimeClient();
     ~WakaTimeClient();
+
+    /**
+     * 초기화 상태 확인
+     * @return 초기화되었으면 true
+     */
+    bool IsInitialized() const { return initialized; }
     
     /**
      * WakaTime 클라이언트 초기화
@@ -132,12 +138,13 @@ public:
      * @return 성공하면 true
      */
     bool Initialize(const std::string& providedApiKey = "");
-    
+
     /**
-     * API 키 설정
-     * @param newApiKey WakaTime API 키
+     * 현재 설정으로 재초기화 시도
+     * @param newApiKey 새로운 API Key
+     * @return 성공하면 true
      */
-    void SetApiKey(const std::string& newApiKey);
+    bool ReInitialize(const std::string& newApiKey);
 
     /**
      * API 키 반환 (마스킹된 버전)

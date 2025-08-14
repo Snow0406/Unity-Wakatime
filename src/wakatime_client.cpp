@@ -61,6 +61,24 @@ bool WakaTimeClient::Initialize(const std::string &providedApiKey)
     return true;
 }
 
+bool WakaTimeClient::ReInitialize(const std::string& newApiKey)
+{
+    std::cout << "[WakaTimeClient] Reinitializing with new API key..." << std::endl;
+
+    shouldStop = true;
+    if (senderThread.joinable())
+    {
+        senderThread.join();
+    }
+
+    CleanupHttpSession();
+
+    initialized = false;
+    shouldStop = false;
+
+    return Initialize(newApiKey);
+}
+
 bool WakaTimeClient::InitializeHttpSession()
 {
     // WinHttpOpen: HTTP 세션 생성
@@ -438,13 +456,6 @@ std::string WakaTimeClient::GetMaskedApiKey() const
     if (apiKey.empty()) return "[ Not Set ]";
     if (apiKey.length() <= 8 ) return "****";
     return apiKey.substr(0, 8) + "****" + apiKey.substr(apiKey.length() - 4);
-}
-
-void WakaTimeClient::SetApiKey(const std::string &newApiKey)
-{
-    apiKey = newApiKey;
-    SaveApiKeyToFile(apiKey);
-    std::cout << "[WakaTimeClient] API key updated" << std::endl;
 }
 
 bool WakaTimeClient::LoadApiKeyFromFile()

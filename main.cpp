@@ -30,7 +30,15 @@ void OnFileChanged(const FileChangeEvent &event)
     // WakaTime API에 heartbeat 전송
     if (g_wakatimeClient)
     {
-        g_wakatimeClient->SendHeartbeatFromEvent(event);
+        if (g_wakatimeClient->IsInitialized())
+        {
+            g_wakatimeClient->SendHeartbeatFromEvent(event);
+            std::cout << "[HEARTBEAT] ✅ Sent to WakaTime API" << std::endl;
+        }
+        else
+        {
+            std::cout << "[HEARTBEAT] ⚠️ Skipped - WakaTime client not initialized" << std::endl;
+        }
     }
 
     // 트레이 아이콘 업데이트
@@ -98,11 +106,21 @@ void OnApiKeyChanged(const std::string &newApiKey)
 
     if (g_wakatimeClient)
     {
-        g_wakatimeClient->SetApiKey(newApiKey);
+        const bool success = g_wakatimeClient->ReInitialize(newApiKey);
 
         if (g_trayIcon)
         {
-            g_trayIcon->ShowInfoNotification("API Key saved");
+            if (success)
+            {
+                g_trayIcon->ShowInfoNotification("✅ API Key saved and client reinitialized!");
+                g_trayIcon->RefreshStatusMenu();
+                std::cout << "[Main] ✅ WakaTime client successfully reinitialized" << std::endl;
+            }
+            else
+            {
+                g_trayIcon->ShowErrorNotification("❌ Failed to initialize with new API key");
+                std::cerr << "[Main] ❌ WakaTime client reinitialization failed" << std::endl;
+            }
         }
     }
 }
