@@ -12,6 +12,7 @@ set(SOURCES
         src/file_watcher.cpp
         src/wakatime_client.cpp
         src/tray_icon.cpp
+        src/unity_focus_detector.cpp
 )
 
 set(HEADERS
@@ -20,6 +21,7 @@ set(HEADERS
         include/file_watcher.h
         include/wakatime_client.h
         include/tray_icon.h
+        include/unity_focus_detector.h
 )
 
 add_executable(unity_wakatime ${SOURCES} ${HEADERS})

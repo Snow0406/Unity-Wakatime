@@ -3,11 +3,13 @@
 #include "file_watcher.h"
 #include "wakatime_client.h"
 #include "tray_icon.h"
+#include "unity_focus_detector.h"
 
 WakaTimeClient *g_wakatimeClient = nullptr;
 FileWatcher *g_fileWatcher = nullptr;
 ProcessMonitor *g_processMonitor = nullptr;
 TrayIcon *g_trayIcon = nullptr;
+UnityFocusDetector *g_unityFocusDetector = nullptr;
 std::atomic<bool> g_shouldExit(false);
 
 // Globals 네임스페이스 구현
@@ -19,6 +21,7 @@ namespace Globals
         g_fileWatcher = nullptr;
         g_processMonitor = nullptr;
         g_trayIcon = nullptr;
+        g_unityFocusDetector = nullptr;
     }
 }
 
@@ -125,6 +128,29 @@ void OnApiKeyChanged(const std::string &newApiKey)
     }
 }
 
+void OnUnityFocusHeartbeat()
+{
+    if (!g_fileWatcher || !g_wakatimeClient) return;
+    if (!g_wakatimeClient->IsInitialized()) return;
+
+    const auto& watchedProjects = g_fileWatcher->GetWatchedProjects();
+    if (watchedProjects.empty()) return;
+
+    const auto& project = watchedProjects[0];
+    g_wakatimeClient->SendHeartbeat(
+        project.projectPath,
+        project.projectName,
+        project.unityVersion,
+        false
+        );
+
+    if (g_trayIcon)
+    {
+        g_trayIcon->IncrementHeartbeats();
+        g_trayIcon->SetCurrentProject(project.projectName);
+    }
+}
+
 void HandleNewUnityInstances(const std::vector<UnityInstance> &newInstances)
 {
     for (const auto &instance: newInstances)
@@ -132,7 +158,7 @@ void HandleNewUnityInstances(const std::vector<UnityInstance> &newInstances)
         std::cout << "[Main] New Unity instance detected: " << instance.projectName
                 << " (Unity " << instance.editorVersion << ")" << std::endl;
 
-        if (g_fileWatcher && g_fileWatcher->StartWatching(instance.projectPath, instance.projectName))
+        if (g_fileWatcher && g_fileWatcher->StartWatching(instance.projectPath, instance.projectName, instance.editorVersion))
         {
             std::cout << "[Main] Started watching: " << instance.projectName << std::endl;
 
@@ -142,7 +168,8 @@ void HandleNewUnityInstances(const std::vector<UnityInstance> &newInstances)
                 g_trayIcon->ShowInfoNotification("New Unity project: " + instance.projectName +
                                                  " (Unity " + instance.editorVersion + ")");
             }
-        } else
+        }
+        else
         {
             std::cout << "[Main] Failed to start watching: " << instance.projectName << std::endl;
         }
@@ -167,9 +194,9 @@ void HandleClosedUnityInstances(const std::vector<UnityInstance> &closedInstance
             // 다른 활성 프로젝트로 전환
             if (g_fileWatcher)
             {
-                if (auto remainingProjects = g_fileWatcher->GetWatchedProjects(); !remainingProjects.empty())
+                if (const auto& remainingProjects = g_fileWatcher->GetWatchedProjects(); !remainingProjects.empty())
                 {
-                    auto projectName = fs::path(remainingProjects[0]).filename().string();
+                    const auto& projectName = remainingProjects[0].projectName;
                     g_trayIcon->SetCurrentProject(projectName);
                     std::cout << "[Main] Switched to remaining project: " << projectName << std::endl;
                 } else
@@ -188,7 +215,7 @@ void InitialUnityProjectScan()
 
     std::cout << "[Main] Performing initial Unity project scan..." << std::endl;
 
-    const auto instances = g_processMonitor->ScanUnityProcesses();
+    const auto& instances = g_processMonitor->ScanUnityProcesses();
 
     if (instances.empty())
     {
@@ -198,7 +225,7 @@ void InitialUnityProjectScan()
 
     for (const auto &instance: instances)
     {
-        if (g_fileWatcher->StartWatching(instance.projectPath, instance.projectName))
+        if (g_fileWatcher->StartWatching(instance.projectPath, instance.projectName, instance.editorVersion))
         {
             std::cout << "[Main] ✅ Started watching: " << instance.projectName
                     << " (Unity " << instance.editorVersion << ")" << std::endl;
@@ -252,6 +279,13 @@ int main()
 
     fileWatcher.SetChangeCallback(OnFileChanged);
 
+    UnityFocusDetector unityFocusDetector;
+    g_unityFocusDetector = &unityFocusDetector;
+
+    unityFocusDetector.SetFocusCallback(OnUnityFocusHeartbeat);
+    unityFocusDetector.SetUnfocusCallback([]() {});
+    unityFocusDetector.SetPeriodicHeartbeatCallback(OnUnityFocusHeartbeat);
+
     InitialUnityProjectScan();
 
     trayIcon.SetMonitoringState(true);
@@ -263,18 +297,15 @@ int main()
 
     while (!Globals::ShouldExit())
     {
-        int msgCount = trayIcon.ProcessMessages();
-
-        if (msgCount > 5)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 많은 메시지 → 빠른 처리
-        } else if (msgCount > 0)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 일부 메시지 → 보통 처리
-        } else
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // 메시지 없음 → 여유 있게
+        if (g_unityFocusDetector) {
+            g_unityFocusDetector->CheckFocused();
+            g_unityFocusDetector->SendPeriodicHeartbeat();
         }
+
+        int msgCount = trayIcon.ProcessMessages();
+        if (msgCount > 5)  std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 많은 메시지 → 빠른 처리
+        else if (msgCount > 0) std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 일부 메시지 → 보통 처리
+        else std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // 메시지 없음 → 여유 있게
 
         if (auto now = std::chrono::steady_clock::now(); now - lastScan >= scanInterval)
         {

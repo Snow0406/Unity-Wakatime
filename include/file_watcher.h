@@ -12,6 +12,7 @@ private:
     struct WatchedProject {
         std::string projectPath;        // 프로젝트 경로
         std::string projectName;        // 프로젝트 이름
+        std::string unityVersion;       // 유니티 버전
         HANDLE directoryHandle;         // 디렉토리 핸들
         std::thread watchThread;        // 감시 스레드
         std::atomic<bool> shouldStop;   // 스레드 종료 플래그
@@ -80,9 +81,10 @@ public:
      * Unity 프로젝트 감시 시작
      * @param projectPath 감시할 프로젝트 경로
      * @param projectName 프로젝트 이름
+     * @param unityVersion 유니티 에디터 버전
      * @return 성공하면 true
      */
-    bool StartWatching(const std::string& projectPath, const std::string& projectName);
+    bool StartWatching(const std::string& projectPath, const std::string& projectName, const std::string& unityVersion);
     
     /**
      * 특정 프로젝트 감시 중지
@@ -105,5 +107,5 @@ public:
      * 감시 중인 모든 프로젝트 경로 반환
      * @return 프로젝트 경로들
      */
-    std::vector<std::string> GetWatchedProjects() const;
+    std::vector<WatchedProjectInfo> GetWatchedProjects() const;
 };

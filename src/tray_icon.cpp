@@ -411,10 +411,10 @@ HMENU TrayIcon::CreateStatusSubMenu()
         AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, watchInfo.c_str());
 
         // 감시 중인 프로젝트 목록 (최대 3개)
-        const auto watchedProjects = Globals::GetFileWatcher()->GetWatchedProjects();
+        const auto& watchedProjects = Globals::GetFileWatcher()->GetWatchedProjects();
         for (size_t i = 0; i < std::min((size_t) 3, watchedProjects.size()); i++)
         {
-            std::string projectName = std::filesystem::path(watchedProjects[i]).filename().string();
+            const auto& projectName = watchedProjects[i].projectName;
             std::wstring projectItem = L"  📁 " + std::wstring(projectName.begin(), projectName.end());
             AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, projectItem.c_str());
         }

@@ -32,6 +32,7 @@ class WakaTimeClient;
 class FileWatcher;
 class ProcessMonitor;
 class TrayIcon;
+class UnityFocusDetector;
 
 struct UnityInstance
 {
@@ -50,6 +51,12 @@ struct FileChangeEvent
     std::string unityVersion;
     DWORD action;
     std::chrono::system_clock::time_point timestamp;
+};
+
+struct WatchedProjectInfo {
+    std::string projectPath;
+    std::string projectName;
+    std::string unityVersion;
 };
 
 namespace Config
@@ -108,6 +115,7 @@ extern WakaTimeClient *g_wakatimeClient;
 extern FileWatcher *g_fileWatcher;
 extern ProcessMonitor *g_processMonitor;
 extern TrayIcon *g_trayIcon;
+extern UnityFocusDetector *g_unityFocusDetector;
 extern std::atomic<bool> g_shouldExit;
 
 namespace Globals
@@ -138,6 +146,11 @@ namespace Globals
     inline TrayIcon *GetTrayIcon() noexcept
     {
         return g_trayIcon;
+    }
+
+    inline UnityFocusDetector *GetUnityFocusDetector() noexcept
+    {
+        return g_unityFocusDetector;
     }
 
     /**

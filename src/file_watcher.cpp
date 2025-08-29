@@ -18,7 +18,7 @@ void FileWatcher::SetChangeCallback(std::function<void(const FileChangeEvent &)>
     std::cout << "[FileWatcher] Change callback set" << std::endl;
 }
 
-bool FileWatcher::StartWatching(const std::string &projectPath, const std::string &projectName)
+bool FileWatcher::StartWatching(const std::string &projectPath, const std::string &projectName, const std::string &unityVersion)
 {
     std::lock_guard<std::mutex> lock(projectsMutex);
 
@@ -39,6 +39,7 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
     auto project = std::make_unique<WatchedProject>();
     project->projectPath = projectPath;
     project->projectName = projectName;
+    project->unityVersion = unityVersion;
     project->shouldStop = false;
 
     // ZeroMemory: 메모리를 0으로 초기화 (Windows API 함수)
@@ -212,6 +213,7 @@ void FileWatcher::ProcessFileChanges(char *buffer, DWORD bytesReturned, WatchedP
                 event.fileName = fileName;
                 event.projectPath = project->projectPath;
                 event.projectName = project->projectName;
+                event.unityVersion = project->unityVersion;
                 event.action = info->Action;
                 event.timestamp = std::chrono::system_clock::now();
 
@@ -345,14 +347,20 @@ size_t FileWatcher::GetWatchedProjectCount() const
     return watchedProjects.size();
 }
 
-std::vector<std::string> FileWatcher::GetWatchedProjects() const
+std::vector<WatchedProjectInfo> FileWatcher::GetWatchedProjects() const
 {
     std::lock_guard<std::mutex> lock(projectsMutex);
 
-    std::vector<std::string> projects;
+    std::vector<WatchedProjectInfo> projects;
+    projects.reserve(watchedProjects.size());
+
     for (const auto &project: watchedProjects)
     {
-        projects.push_back(project->projectPath);
+        WatchedProjectInfo info;
+        info.projectPath = project->projectPath;
+        info.projectName = project->projectName;
+        info.unityVersion = project->unityVersion;
+        projects.emplace_back(std::move(info));
     }
 
     return projects;
