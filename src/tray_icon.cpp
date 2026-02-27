@@ -1,6 +1,7 @@
-﻿#include "tray_icon.h"
+#include "tray_icon.h"
 #include "file_watcher.h"
 #include "wakatime_client.h"
+#include "windows_dark_mode.h"
 
 #include <wincodec.h>
 #include <comdef.h>
@@ -100,6 +101,8 @@ bool TrayIcon::CreateHiddenWindow()
         std::cerr << "[TrayIcon] CreateWindow failed (Error: " << error << ")" << std::endl;
         return false;
     }
+
+    WindowsDarkMode::ApplyToWindow(hwnd);
 
     std::cout << "[TrayIcon] Hidden window created" << std::endl;
     return true;
@@ -317,17 +320,12 @@ HMENU TrayIcon::CreateContextMenu()
     const HMENU menu = CreatePopupMenu();
 
     HMENU statusSubMenu = CreateStatusSubMenu();
-    AppendMenuW(menu, MF_STRING | MF_POPUP, (UINT_PTR) statusSubMenu, L"📊 Status");
+    AppendMenuW(menu, MF_STRING | MF_POPUP, (UINT_PTR) statusSubMenu, L"Status");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     AppendMenuW(menu, MF_STRING, IDM_TOGGLE_MONITORING, L"Pause Monitoring");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-    AppendMenuW(menu, MF_STRING, IDM_OPEN_DASHBOARD, L"Open WakaTime Dashboard");
-    AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"🔑 Setup API Key");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-    AppendMenuW(menu, MF_STRING, IDM_GITHUB, L"ℹ️ Unity WakaTime v1.0.2");
+    AppendMenuW(menu, MF_STRING, IDM_OPEN_DASHBOARD, L"Open Dashboard");
+    AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"Setup API Key");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
@@ -340,96 +338,37 @@ HMENU TrayIcon::CreateStatusSubMenu()
 {
     const HMENU subMenu = CreatePopupMenu();
 
-    // === API Key 상태 ===
-    if (Globals::GetWakaTimeClient())
-    {
-        std::string maskedKey = Globals::GetWakaTimeClient()->GetMaskedApiKey();
-        const std::wstring apiKeyInfo = L"🔑 API Key: " + std::wstring(maskedKey.begin(), maskedKey.end());
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, apiKeyInfo.c_str());
-    }
-    else
-    {
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, L"🔑 API Key: Not configured");
-    }
-
-    AppendMenuW(subMenu, MF_SEPARATOR, 0, nullptr);
-
-    // === 모니터링 상태 ===
-    const std::wstring monitoringStatus = isMonitoring ? L"✅ Monitoring: Active" : L"⏸️ Monitoring: Paused";
+    // Monitoring state
+    const std::wstring monitoringStatus = isMonitoring ? L"Monitoring: Active" : L"Monitoring: Paused";
     AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, monitoringStatus.c_str());
 
-    // === 현재 프로젝트 ===
+    // Current project
     if (!currentProject.empty())
     {
-        const std::wstring projectInfo = L"🎮 Current: " + std::wstring(currentProject.begin(), currentProject.end());
+        const std::wstring projectInfo = L"Current Project: " + std::wstring(currentProject.begin(), currentProject.end());
         AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, projectInfo.c_str());
     } else
     {
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, L"🎮 No Unity project detected");
+        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, L"No Unity project detected");
     }
 
-    // === Heartbeat 통계 ===
-    const std::wstring heartbeatInfo = L"💓 Total Heartbeats: " + std::to_wstring(totalHeartbeats);
+    // Heartbeat summary
+    int sent = 0;
+    int failed = 0;
+    if (const auto *client = Globals::GetWakaTimeClient())
+    {
+        client->GetStats(sent, failed);
+    }
+
+    std::wstring heartbeatInfo = L"Heartbeats: " + std::to_wstring(totalHeartbeats) +
+                                 L" (Sent: " + std::to_wstring(sent) +
+                                 L", Failed: " + std::to_wstring(failed) + L")";
     AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, heartbeatInfo.c_str());
-    AppendMenuW(subMenu, MF_SEPARATOR, 0, nullptr);
-
-    // === WakaTime 통계 ===
-    if (Globals::GetWakaTimeClient())
-    {
-        int sent, failed;
-        Globals::GetWakaTimeClient()->GetStats(sent, failed);
-
-        const std::wstring sentInfo = L"📤 Sent: " + std::to_wstring(sent);
-        const std::wstring failedInfo = L"❌ Failed: " + std::to_wstring(failed);
-
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, sentInfo.c_str());
-        if (failed > 0)
-        {
-            AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, failedInfo.c_str());
-        }
-
-        // 성공률 계산
-        if (sent + failed > 0)
-        {
-            const int successRate = (sent * 100) / (sent + failed);
-            const std::wstring rateInfo = L"📊 Success Rate: " + std::to_wstring(successRate) + L"%";
-            AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, rateInfo.c_str());
-        }
-    }
-    else
-    {
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, L"⚠️ WakaTime client not initialized");
-    }
 
     AppendMenuW(subMenu, MF_SEPARATOR, 0, nullptr);
 
-    // === 파일 감시 상태 ===
-    if (Globals::GetFileWatcher())
-    {
-        const size_t watchedCount = Globals::GetFileWatcher()->GetWatchedProjectCount();
-        const std::wstring watchInfo = L"👁️ Watching: " + std::to_wstring(watchedCount) + L" projects";
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, watchInfo.c_str());
-
-        // 감시 중인 프로젝트 목록 (최대 3개)
-        const auto& watchedProjects = Globals::GetFileWatcher()->GetWatchedProjects();
-        for (size_t i = 0; i < std::min((size_t) 3, watchedProjects.size()); i++)
-        {
-            const auto& projectName = watchedProjects[i].projectName;
-            std::wstring projectItem = L"  📁 " + std::wstring(projectName.begin(), projectName.end());
-            AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, projectItem.c_str());
-        }
-
-        if (watchedProjects.size() > 3)
-        {
-            const std::wstring moreInfo = L"  ... and " + std::to_wstring(watchedProjects.size() - 3) + L" more";
-            AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, moreInfo.c_str());
-        }
-    }
-
-    AppendMenuW(subMenu, MF_SEPARATOR, 0, nullptr);
-
-    // === 액션 항목들 ===
-    AppendMenuW(subMenu, MF_STRING, IDM_SHOW_STATUS, L"🔄 Refresh Status");
+    // Actions
+    AppendMenuW(subMenu, MF_STRING, IDM_SHOW_STATUS, L"Refresh Status");
 
     return subMenu;
 }
@@ -449,7 +388,7 @@ void TrayIcon::UpdateContextMenu()
     // 새로운 서브메뉴 생성 및 삽입
     HMENU newStatusSubMenu = CreateStatusSubMenu();
     InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING | MF_POPUP,
-                (UINT_PTR)newStatusSubMenu, L"📊 Status");
+                (UINT_PTR)newStatusSubMenu, L"Status");
 }
 
 void TrayIcon::OpenGitHubRepository() {
@@ -598,7 +537,7 @@ std::string TrayIcon::ShowApiKeyInputDialog()
 
     const std::wstring wMessage(message.begin(), message.end());
 
-    if (const int result = MessageBoxW(hwnd, wMessage.c_str(), L"🔑 WakaTime API Key Setup",
+    if (const int result = MessageBoxW(hwnd, wMessage.c_str(), L"WakaTime API Key Setup",
         MB_OKCANCEL | MB_ICONINFORMATION | MB_TOPMOST); result == IDOK)
     {
         if (const std::string clipboardText = GetClipboardText(); !clipboardText.empty())
@@ -607,13 +546,13 @@ std::string TrayIcon::ShowApiKeyInputDialog()
         }
         else
         {
-            std::wstring retryMessage = L"❌ No valid API key found in clipboard!\n\n";
+            std::wstring retryMessage = L"No valid API key found in clipboard.\n\n";
             retryMessage += L"Please:\n";
             retryMessage += L"1. Go to the opened WakaTime page\n";
             retryMessage += L"2. Copy your API key\n";
             retryMessage += L"3. Try again from the tray menu\n\n";
 
-            MessageBoxW(hwnd, retryMessage.c_str(), L"⚠️ API Key Not Found",
+            MessageBoxW(hwnd, retryMessage.c_str(), L"API Key Not Found",
                         MB_OK | MB_ICONWARNING | MB_TOPMOST);
         }
     }

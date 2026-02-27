@@ -4,6 +4,7 @@
 #include "wakatime_client.h"
 #include "tray_icon.h"
 #include "unity_focus_detector.h"
+#include "windows_dark_mode.h"
 
 WakaTimeClient *g_wakatimeClient = nullptr;
 FileWatcher *g_fileWatcher = nullptr;
@@ -243,6 +244,9 @@ void InitialUnityProjectScan()
 int main()
 {
     std::cout << "[Main] Unity WakaTime Monitor Starting..." << std::endl;
+    const bool darkModeAvailable = WindowsDarkMode::EnableForApp();
+    std::cout << "[Main] Dark mode menu opt-in: "
+              << (darkModeAvailable ? "enabled" : "not available") << std::endl;
 
     TrayIcon trayIcon;
     g_trayIcon = &trayIcon;
