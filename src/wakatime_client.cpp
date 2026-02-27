@@ -1,4 +1,9 @@
-﻿#include "wakatime_client.h"
+#include "wakatime_client.h"
+
+namespace
+{
+    constexpr size_t kMaxHeartbeatQueueSize = 1024;
+}
 
 WakaTimeClient::WakaTimeClient() : hSession(nullptr),
                                    initialized(false),
@@ -429,6 +434,10 @@ void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::strin
     // 큐에 추가 (비동기 전송)
     {
         std::lock_guard<std::mutex> lock(queueMutex);
+        while (heartbeatQueue.size() >= kMaxHeartbeatQueueSize)
+        {
+            heartbeatQueue.pop(); // 메모리 폭주 방지를 위해 가장 오래된 heartbeat 제거
+        }
         heartbeatQueue.push(heartbeat);
     }
 }
@@ -529,3 +538,4 @@ void WakaTimeClient::FlushQueue()
 
     std::cout << "[WakaTimeClient] Queue flushed" << std::endl;
 }
+

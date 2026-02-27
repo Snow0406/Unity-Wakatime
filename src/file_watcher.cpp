@@ -1,5 +1,6 @@
 ﻿#include "file_watcher.h"
 #include <utility>
+#include <system_error>
 
 FileWatcher::FileWatcher()
 {
@@ -37,6 +38,12 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
 
     // 새로운 WatchedProject 생성
     auto project = std::make_unique<WatchedProject>();
+    if (project->stopEvent == nullptr || project->ioEvent == nullptr)
+    {
+        std::cerr << "[FileWatcher] Failed to create watcher events for: " << projectPath << std::endl;
+        return false;
+    }
+
     project->projectPath = projectPath;
     project->projectName = projectName;
     project->unityVersion = unityVersion;
@@ -44,6 +51,7 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
 
     // ZeroMemory: 메모리를 0으로 초기화 (Windows API 함수)
     ZeroMemory(&project->overlapped, sizeof(OVERLAPPED));
+    project->overlapped.hEvent = project->ioEvent;
     ZeroMemory(project->buffer, sizeof(project->buffer));
 
     // CreateFile: 디렉토리 핸들 열기
@@ -72,7 +80,16 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
 
     // 감시 스레드 시작
     WatchedProject *projectPtr = project.get();
-    project->watchThread = std::thread(&FileWatcher::WatchProjectThread, this, projectPtr);
+    try
+    {
+        project->watchThread = std::thread(&FileWatcher::WatchProjectThread, this, projectPtr);
+    }
+    catch (const std::system_error &e)
+    {
+        std::cerr << "[FileWatcher] Failed to start watch thread for " << projectName << ": " << e.what() << std::endl;
+        return false;
+    }
+
     watchedProjects.push_back(std::move(project));
 
     return true;
@@ -80,11 +97,24 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
 
 void FileWatcher::WatchProjectThread(WatchedProject *project)
 {
+    if (project == nullptr ||
+        project->directoryHandle == nullptr ||
+        project->directoryHandle == INVALID_HANDLE_VALUE ||
+        project->stopEvent == nullptr ||
+        project->ioEvent == nullptr)
+    {
+        std::cerr << "[FileWatcher] Invalid watch project state, thread exit" << std::endl;
+        return;
+    }
+
     std::cout << "[FileWatcher] Watch thread started for: " << project->projectName << std::endl;
 
     while (!project->shouldStop)
     {
         DWORD bytesReturned = 0;
+        ZeroMemory(&project->overlapped, sizeof(OVERLAPPED));
+        project->overlapped.hEvent = project->ioEvent;
+        ResetEvent(project->ioEvent);
 
         // ReadDirectoryChangesW: 디렉토리 변경사항을 감지하는 핵심 함수
         // TRUE: 하위 폴더도 감시
@@ -107,9 +137,18 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
                 break;
             }
         }
+        else
+        {
+            // 드물게 동기 완료될 수 있으므로 즉시 처리
+            if (bytesReturned > 0)
+            {
+                ProcessFileChanges(project->buffer, bytesReturned, project);
+            }
+            continue;
+        }
 
         const HANDLE waitHandles[2] = {
-            project->directoryHandle,   // I/O 완료 대기
+            project->ioEvent,           // I/O 완료 대기
             project->stopEvent          // 종료 신호 대기
         };
 
@@ -123,7 +162,7 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
 
         switch (waitResult)
         {
-            case WAIT_OBJECT_0: // directoryHandle 신호 (I/O 완료)
+            case WAIT_OBJECT_0: // ioEvent 신호 (I/O 완료)
             {
                 // GetOverlappedResult로 결과 확인
                 if (GetOverlappedResult(project->directoryHandle, &project->overlapped, &bytesReturned, FALSE))
@@ -133,11 +172,14 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
                 }
                 else
                 {
-                    if (const DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED)
+                    if (const DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED && error != ERROR_IO_INCOMPLETE)
                     {
                         std::cerr << "[FileWatcher] GetOverlappedResult failed for " << project->projectName << " (Error: " << error << ")" << std::endl;
                     }
-                    break;
+                    if (project->shouldStop)
+                    {
+                        goto thread_exit;
+                    }
                 }
                 break;
             }
@@ -158,8 +200,6 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
                 std::cerr << "[FileWatcher] WaitForMultipleObjects failed for " << project->projectName << " (Error: " << GetLastError() << ")" << std::endl;
                 goto thread_exit;
         }
-
-        ZeroMemory(&project->overlapped, sizeof(OVERLAPPED));
     }
 
 thread_exit:
@@ -260,84 +300,76 @@ bool FileWatcher::ShouldIgnoreFolder(const std::string &folderName) const
 
 void FileWatcher::StopWatching(const std::string &projectPath)
 {
-    std::lock_guard<std::mutex> lock(projectsMutex);
+    std::unique_ptr<WatchedProject> projectToStop;
 
-    const auto it = std::remove_if(watchedProjects.begin(), watchedProjects.end(),
-                             [&projectPath](const std::unique_ptr<WatchedProject> &project)
-                             {
-                                 if (project->projectPath == projectPath)
-                                 {
-                                     std::cout << "[FileWatcher] Stopping watch for: " << project->projectName << std::endl;
+    {
+        std::lock_guard<std::mutex> lock(projectsMutex);
 
-                                     project->shouldStop = true;
-
-                                     SetEvent(project->stopEvent);
-                                     CancelIo(project->directoryHandle); // I/O 작업 취소
-
-                                     // 스레드 종료 대기
-                                     if (project->watchThread.joinable())
+        const auto it = std::find_if(watchedProjects.begin(), watchedProjects.end(),
+                                     [&projectPath](const std::unique_ptr<WatchedProject> &project)
                                      {
-                                         const auto future = std::async(std::launch::async, [&project]()
-                                         {
-                                             project->watchThread.join();
-                                         });
+                                         return project->projectPath == projectPath;
+                                     });
 
-                                         // 5초 타임아웃으로 join 대기
-                                         if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout)
-                                         {
-                                             std::cout << "[FileWatcher] Thread join timeout, forcing termination" << std::endl;
-                                             project->watchThread.detach(); // 강제 종료
-                                         }
-                                     }
+        if (it == watchedProjects.end())
+        {
+            return;
+        }
 
-                                     CloseHandle(project->directoryHandle);
-                                     return true;
-                                 }
-                                 return false;
-                             });
+        projectToStop = std::move(*it);
+        watchedProjects.erase(it);
+    }
 
-    watchedProjects.erase(it, watchedProjects.end());
+    std::cout << "[FileWatcher] Stopping watch for: " << projectToStop->projectName << std::endl;
+    projectToStop->shouldStop = true;
+
+    if (projectToStop->stopEvent != nullptr)
+    {
+        SetEvent(projectToStop->stopEvent);
+    }
+    if (projectToStop->directoryHandle != nullptr && projectToStop->directoryHandle != INVALID_HANDLE_VALUE)
+    {
+        CancelIoEx(projectToStop->directoryHandle, nullptr);
+    }
+    if (projectToStop->watchThread.joinable())
+    {
+        projectToStop->watchThread.join();
+    }
 }
 
 void FileWatcher::StopAllWatching()
 {
-    std::lock_guard<std::mutex> lock(projectsMutex);
+    std::vector<std::unique_ptr<WatchedProject>> projectsToStop;
+
+    {
+        std::lock_guard<std::mutex> lock(projectsMutex);
+        projectsToStop.swap(watchedProjects);
+    }
 
     std::cout << "[FileWatcher] Stopping all watches..." << std::endl;
 
-    for (const auto &project: watchedProjects)
+    for (const auto &project: projectsToStop)
     {
         project->shouldStop = true;
-        SetEvent(project->stopEvent);
-        CancelIo(project->directoryHandle);
+        if (project->stopEvent != nullptr)
+        {
+            SetEvent(project->stopEvent);
+        }
+        if (project->directoryHandle != nullptr && project->directoryHandle != INVALID_HANDLE_VALUE)
+        {
+            CancelIoEx(project->directoryHandle, nullptr);
+        }
     }
 
     // 모든 스레드 종료 대기
-    int joinedCount = 0;
-    for (auto &project: watchedProjects)
+    for (auto &project: projectsToStop)
     {
         if (project->watchThread.joinable())
         {
-            auto future = std::async(std::launch::async, [&project]()
-            {
-                project->watchThread.join();
-            });
-
-            if (future.wait_for(std::chrono::seconds(3)) == std::future_status::ready)
-            {
-                joinedCount++;
-            }
-            else
-            {
-                std::cout << "[FileWatcher] Thread join timeout: " << project->projectName << std::endl;
-                project->watchThread.detach();
-            }
+            project->watchThread.join();
         }
-
-        CloseHandle(project->directoryHandle);
     }
 
-    watchedProjects.clear();
     std::cout << "[FileWatcher] All watches stopped" << std::endl;
 }
 

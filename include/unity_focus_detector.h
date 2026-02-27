@@ -5,7 +5,7 @@ class UnityFocusDetector {
 private:
    bool isUnityFocused = false;
     std::chrono::steady_clock::time_point lastHeartbeat;
-    std::chrono::seconds heartbeatInterval{120}; // 5분
+    std::chrono::seconds heartbeatInterval{120}; // 2분
 
     std::function<void()> focusCallback;
     std::function<void()> unfocusCallback;
@@ -18,7 +18,7 @@ public:
    void CheckFocused();
 
    /**
-    * 5분마다 호출
+    * 2분마다 호출
     */
    void SendPeriodicHeartbeat();
 

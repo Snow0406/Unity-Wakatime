@@ -12,6 +12,7 @@ set(SOURCES
         src/file_watcher.cpp
         src/wakatime_client.cpp
         src/tray_icon.cpp
+        src/windows_dark_mode.cpp
         src/unity_focus_detector.cpp
 )
 
@@ -21,6 +22,7 @@ set(HEADERS
         include/file_watcher.h
         include/wakatime_client.h
         include/tray_icon.h
+        include/windows_dark_mode.h
         include/unity_focus_detector.h
 )
 
@@ -52,6 +54,7 @@ if(WIN32)
                 ole32
                 oleaut32
                 windowscodecs
+                dwmapi
                 user32
         )
     else()
@@ -64,6 +67,7 @@ if(WIN32)
                 ole32
                 oleaut32
                 windowscodecs
+                dwmapi
                 user32
         )
     endif()
