@@ -19,16 +19,33 @@ private:
         OVERLAPPED overlapped;          // 비동기 I/O용 구조체
         char buffer[4096];              // 변경 정보를 받을 버퍼
         HANDLE stopEvent;
+        HANDLE ioEvent;
 
-        WatchedProject() : shouldStop(false) {
+        WatchedProject() :
+            directoryHandle(INVALID_HANDLE_VALUE),
+            shouldStop(false),
+            stopEvent(nullptr),
+            ioEvent(nullptr)
+        {
             stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+            ioEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
             ZeroMemory(&overlapped, sizeof(OVERLAPPED));
+            overlapped.hEvent = ioEvent;
             ZeroMemory(buffer, sizeof(buffer));
         }
 
         ~WatchedProject() {
-            if (stopEvent != INVALID_HANDLE_VALUE) {
+            if (stopEvent != nullptr) {
                 CloseHandle(stopEvent);
+                stopEvent = nullptr;
+            }
+            if (ioEvent != nullptr) {
+                CloseHandle(ioEvent);
+                ioEvent = nullptr;
+            }
+            if (directoryHandle != nullptr && directoryHandle != INVALID_HANDLE_VALUE) {
+                CloseHandle(directoryHandle);
+                directoryHandle = INVALID_HANDLE_VALUE;
             }
         }
     };
