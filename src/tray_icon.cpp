@@ -681,6 +681,7 @@ void TrayIcon::ShowBalloonNotification(const std::string &title,
 
 void TrayIcon::SetCurrentProject(const std::string &projectName)
 {
+    const bool projectChanged = (currentProject != projectName);
     currentProject = projectName;
 
     std::ostringstream tooltip;
@@ -692,7 +693,10 @@ void TrayIcon::SetCurrentProject(const std::string &projectName)
     tooltip << " (" << totalHeartbeats << " heartbeats)";
 
     UpdateTooltip(tooltip.str());
-    RefreshStatusMenu();
+    if (projectChanged)
+    {
+        RefreshStatusMenu();
+    }
 }
 
 void TrayIcon::IncrementHeartbeats()

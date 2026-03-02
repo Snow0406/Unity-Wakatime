@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "globals.h"
+#include <deque>
 
 /**
  * Unity 프로젝트 폴더의 파일 변경사항을 실시간으로 감지 <br/>
@@ -52,6 +53,8 @@ private:
 
     std::vector<std::unique_ptr<WatchedProject>> watchedProjects;
     mutable std::mutex projectsMutex;  // 스레드 안전성을 위한 뮤텍스
+    std::deque<FileChangeEvent> pendingEvents;
+    mutable std::mutex pendingEventsMutex;
     
     // 파일 변경 이벤트 콜백 함수
     std::function<void(const FileChangeEvent&)> changeCallback;
@@ -113,6 +116,12 @@ public:
      * 모든 프로젝트 감시 중지
      */
     void StopAllWatching();
+
+    /**
+     * 워커 스레드에서 수집된 이벤트를 현재(호출) 스레드에서 전달
+     * @param maxEvents 한 번에 처리할 최대 이벤트 수
+     */
+    void DrainPendingEvents(size_t maxEvents = 1024);
     
     /**
      * 현재 감시 중인 프로젝트 수 반환

@@ -2,6 +2,11 @@
 #include <utility>
 #include <system_error>
 
+namespace
+{
+    constexpr size_t kMaxPendingEvents = 1024;
+}
+
 FileWatcher::FileWatcher()
 {
     std::cout << "[FileWatcher] Initialized" << std::endl;
@@ -143,8 +148,8 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
             if (bytesReturned > 0)
             {
                 ProcessFileChanges(project->buffer, bytesReturned, project);
+                continue;
             }
-            continue;
         }
 
         const HANDLE waitHandles[2] = {
@@ -157,7 +162,7 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
             2,              // 대기할 핸들 개수
             waitHandles,    // 핸들 배열
             FALSE,          // 모든 핸들이 아닌 하나만 신호되면 됨
-            1000            // 1초 타임아웃
+            INFINITE        // I/O 완료 또는 종료 신호까지 대기
         );
 
         switch (waitResult)
@@ -187,14 +192,6 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
             case (WAIT_OBJECT_0 + 1): // stopEvent 신호 (종료 요청)
                 std::cout << "[FileWatcher] Stop event received for: " << project->projectName << std::endl;
                 goto thread_exit; // 즉시 종료
-
-            case WAIT_TIMEOUT: // 타임아웃 (정상, 계속 진행)
-                if (project->shouldStop)
-                {
-                    std::cout << "[FileWatcher] Stop flag detected for: " << project->projectName << std::endl;
-                    goto thread_exit;
-                }
-                break;
 
             default: // 에러
                 std::cerr << "[FileWatcher] WaitForMultipleObjects failed for " << project->projectName << " (Error: " << GetLastError() << ")" << std::endl;
@@ -259,10 +256,14 @@ void FileWatcher::ProcessFileChanges(char *buffer, DWORD bytesReturned, WatchedP
 
                 std::cout << "[FileWatcher] Change" << ": " << fileName << " in " << project->projectName << std::endl;
 
-                // 콜백 함수 호출 (WakaTime에 heartbeat 전송 등)
-                if (changeCallback)
+                // 워커 스레드에서 직접 UI/앱 콜백을 호출하지 않고 큐에 적재
                 {
-                    changeCallback(event);
+                    std::lock_guard<std::mutex> lock(pendingEventsMutex);
+                    while (pendingEvents.size() >= kMaxPendingEvents)
+                    {
+                        pendingEvents.pop_front();
+                    }
+                    pendingEvents.emplace_back(std::move(event));
                 }
             }
         }
@@ -294,8 +295,21 @@ bool FileWatcher::IsUnityFile(const std::string &fileName) const
 
 bool FileWatcher::ShouldIgnoreFolder(const std::string &folderName) const
 {
+    std::string normalizedFolder = folderName;
+    std::transform(normalizedFolder.begin(), normalizedFolder.end(), normalizedFolder.begin(), tolower);
+
     const auto &ignoreFolders = Config::GetIgnoreFolders();
-    return ignoreFolders.find(folderName) != ignoreFolders.end();
+    for (const auto &ignoreFolder: ignoreFolders)
+    {
+        std::string normalizedIgnore = ignoreFolder;
+        std::transform(normalizedIgnore.begin(), normalizedIgnore.end(), normalizedIgnore.begin(), tolower);
+        if (normalizedFolder == normalizedIgnore)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void FileWatcher::StopWatching(const std::string &projectPath)
@@ -371,6 +385,36 @@ void FileWatcher::StopAllWatching()
     }
 
     std::cout << "[FileWatcher] All watches stopped" << std::endl;
+}
+
+void FileWatcher::DrainPendingEvents(const size_t maxEvents)
+{
+    if (!changeCallback || maxEvents == 0)
+    {
+        return;
+    }
+
+    std::vector<FileChangeEvent> localEvents;
+    {
+        std::lock_guard<std::mutex> lock(pendingEventsMutex);
+        if (pendingEvents.empty())
+        {
+            return;
+        }
+
+        const size_t count = std::min(maxEvents, pendingEvents.size());
+        localEvents.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+        {
+            localEvents.emplace_back(std::move(pendingEvents.front()));
+            pendingEvents.pop_front();
+        }
+    }
+
+    for (const auto &event: localEvents)
+    {
+        changeCallback(event);
+    }
 }
 
 size_t FileWatcher::GetWatchedProjectCount() const

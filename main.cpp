@@ -301,6 +301,11 @@ int main()
 
     while (!Globals::ShouldExit())
     {
+        if (g_fileWatcher)
+        {
+            g_fileWatcher->DrainPendingEvents();
+        }
+
         if (g_unityFocusDetector) {
             g_unityFocusDetector->CheckFocused();
             g_unityFocusDetector->SendPeriodicHeartbeat();
@@ -335,6 +340,11 @@ int main()
     // 남은 heartbeat 전송
     if (g_wakatimeClient)
     {
+        if (g_fileWatcher)
+        {
+            g_fileWatcher->DrainPendingEvents(2048);
+        }
+
         std::cout << "[Main] Flushing remaining heartbeats..." << std::endl;
         wakatimeClient.FlushQueue();
     }

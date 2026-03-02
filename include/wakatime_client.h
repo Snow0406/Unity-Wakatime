@@ -45,6 +45,9 @@ private:
     // 비동기 전송 관리
     mutable std::mutex queueMutex;              // 큐 접근 동기화
     std::queue<HeartbeatData> heartbeatQueue;   // 전송 대기 큐
+    std::chrono::steady_clock::time_point lastQueuedAt;
+    std::string lastQueuedEntity;
+    std::string lastQueuedProject;
     std::thread senderThread;                   // 백그라운드 전송 스레드
     std::atomic<bool> shouldStop;               // 스레드 종료 플래그
     

@@ -2,7 +2,9 @@
 
 namespace
 {
-    constexpr size_t kMaxHeartbeatQueueSize = 1024;
+    constexpr size_t kMaxHeartbeatQueueSize = 256;
+    constexpr auto kSameFileHeartbeatInterval = std::chrono::seconds(120);
+    constexpr auto kSameFileWriteInterval = std::chrono::seconds(2);
 }
 
 WakaTimeClient::WakaTimeClient() : hSession(nullptr),
@@ -434,11 +436,27 @@ void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::strin
     // 큐에 추가 (비동기 전송)
     {
         std::lock_guard<std::mutex> lock(queueMutex);
+
+        const auto now = std::chrono::steady_clock::now();
+        const bool isSameContext = (heartbeat.entity == lastQueuedEntity && heartbeat.project == lastQueuedProject);
+        if (lastQueuedAt.time_since_epoch().count() != 0 && isSameContext)
+        {
+            const auto elapsed = now - lastQueuedAt;
+            const auto minInterval = heartbeat.is_write ? kSameFileWriteInterval : kSameFileHeartbeatInterval;
+            if (elapsed < minInterval)
+            {
+                return;
+            }
+        }
+
         while (heartbeatQueue.size() >= kMaxHeartbeatQueueSize)
         {
             heartbeatQueue.pop(); // 메모리 폭주 방지를 위해 가장 오래된 heartbeat 제거
         }
         heartbeatQueue.push(heartbeat);
+        lastQueuedAt = now;
+        lastQueuedEntity = heartbeat.entity;
+        lastQueuedProject = heartbeat.project;
     }
 }
 
