@@ -21,6 +21,13 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
+    - name: Verify Icon Assets
+      shell: pwsh
+      run: |
+        if (-not (Test-Path "logo_32.png")) { throw "Missing logo_32.png in repository root" }
+        if (-not (Test-Path "logo_32.ico")) { throw "Missing logo_32.ico in repository root" }
+        Write-Host "Icon assets verified: logo_32.png, logo_32.ico"
+
     - name: Setup MinGW with Ninja
       uses: msys2/setup-msys2@v2
       with:
@@ -63,6 +70,7 @@ jobs:
       run: |
         echo "📁 Copying resources..."
         cp logo_32.png build/
+        cp logo_32.ico build/
 
     - name: Build with Ninja (Test)
       shell: msys2 {0}
@@ -90,6 +98,13 @@ jobs:
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
+
+    - name: Verify Icon Assets
+      shell: pwsh
+      run: |
+        if (-not (Test-Path "logo_32.png")) { throw "Missing logo_32.png in repository root" }
+        if (-not (Test-Path "logo_32.ico")) { throw "Missing logo_32.ico in repository root" }
+        Write-Host "Icon assets verified: logo_32.png, logo_32.ico"
 
     - name: Extract Version
       shell: bash
@@ -133,6 +148,7 @@ jobs:
       run: |
         echo "📁 Copying resources for release..."
         cp logo_32.png build/
+        cp logo_32.ico build/
 
     - name: Build Production Release (Ninja)
       shell: msys2 {0}
@@ -159,6 +175,7 @@ jobs:
         mkdir -p "release-package/$PACKAGE_NAME"
         cp build/unity_wakatime.exe "release-package/$PACKAGE_NAME/"
         cp build/logo_32.png "release-package/$PACKAGE_NAME/"
+        cp build/logo_32.ico "release-package/$PACKAGE_NAME/"
 
         [ -f README.md ] && cp README.md "release-package/$PACKAGE_NAME/" || echo "README.md not found"
         [ -f LICENSE ] && cp LICENSE "release-package/$PACKAGE_NAME/" || echo "LICENSE not found"

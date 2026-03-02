@@ -16,6 +16,18 @@ set(SOURCES
         src/unity_focus_detector.cpp
 )
 
+if(WIN32)
+    set(APP_ICON_FILE "${CMAKE_SOURCE_DIR}/logo_32.ico")
+    if(EXISTS "${APP_ICON_FILE}")
+        file(TO_CMAKE_PATH "${APP_ICON_FILE}" APP_ICON_FILE_RC)
+        set(APP_ICON_RC_FILE "${CMAKE_BINARY_DIR}/app_icon.rc")
+        configure_file("${CMAKE_SOURCE_DIR}/app_icon.rc.in" "${APP_ICON_RC_FILE}" @ONLY)
+        list(APPEND SOURCES "${APP_ICON_RC_FILE}")
+    else()
+        message(STATUS "logo_32.ico not found. EXE will use default Windows icon.")
+    endif()
+endif()
+
 set(HEADERS
         include/globals.h
         include/process_monitor.h
