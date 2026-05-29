@@ -16,31 +16,31 @@ TrayIcon::TrayIcon() : hwnd(nullptr),
     ZeroMemory(&nid, sizeof(NOTIFYICONDATAW));
     ZeroMemory(&wc, sizeof(WNDCLASSW));
 
-    std::cout << "[TrayIcon] Created" << std::endl;
+    WT_LOG("[TrayIcon] Created");
 }
 
 TrayIcon::~TrayIcon()
 {
     Shutdown();
 
-    std::cout << "[TrayIcon] Destroyed" << std::endl;
+    WT_LOG("[TrayIcon] Destroyed");
 }
 
 bool TrayIcon::Initialize(const std::string &appName)
 {
-    std::cout << "[TrayIcon] Initializing: " << appName << std::endl;
+    WT_LOG("[TrayIcon] Initializing: " << appName);
 
     // 숨겨진 창 생성
     if (!CreateHiddenWindow())
     {
-        std::cerr << "[TrayIcon] Failed to create hidden window" << std::endl;
+        WT_ERR("[TrayIcon] Failed to create hidden window");
         return false;
     }
 
     // 트레이 아이콘 생성
     if (!CreateTrayIcon())
     {
-        std::cerr << "[TrayIcon] Failed to create tray icon" << std::endl;
+        WT_ERR("[TrayIcon] Failed to create tray icon");
         return false;
     }
 
@@ -48,7 +48,7 @@ bool TrayIcon::Initialize(const std::string &appName)
     hMenu = CreateContextMenu();
     if (!hMenu)
     {
-        std::cerr << "[TrayIcon] Failed to create context menu" << std::endl;
+        WT_ERR("[TrayIcon] Failed to create context menu");
         return false;
     }
 
@@ -56,7 +56,7 @@ bool TrayIcon::Initialize(const std::string &appName)
     UpdateTooltip(appName + " - Ready");
 
     initialized = true;
-    std::cout << "[TrayIcon] Initialized successfully" << std::endl;
+    WT_LOG("[TrayIcon] Initialized successfully");
 
     return true;
 }
@@ -75,7 +75,7 @@ bool TrayIcon::CreateHiddenWindow()
         if (const DWORD error = GetLastError(); error != ERROR_CLASS_ALREADY_EXISTS)
         {
             // 이미 등록된 경우는 정상
-            std::cerr << "[TrayIcon] RegisterClass failed (Error: " << error << ")" << std::endl;
+            WT_ERR("[TrayIcon] RegisterClass failed (Error: " << error << ")");
             return false;
         }
     }
@@ -98,13 +98,13 @@ bool TrayIcon::CreateHiddenWindow()
     if (!hwnd)
     {
         const DWORD error = GetLastError();
-        std::cerr << "[TrayIcon] CreateWindow failed (Error: " << error << ")" << std::endl;
+        WT_ERR("[TrayIcon] CreateWindow failed (Error: " << error << ")");
         return false;
     }
 
     WindowsDarkMode::ApplyToWindow(hwnd);
 
-    std::cout << "[TrayIcon] Hidden window created" << std::endl;
+    WT_LOG("[TrayIcon] Hidden window created");
     return true;
 }
 
@@ -121,20 +121,20 @@ bool TrayIcon::CreateTrayIcon() {
 
     if (!Shell_NotifyIconW(NIM_ADD, &nid)) {
         DWORD error = GetLastError();
-        std::cerr << "[TrayIcon] Shell_NotifyIconW(NIM_ADD) failed (Error: " << error << ")" << std::endl;
+        WT_ERR("[TrayIcon] Shell_NotifyIconW(NIM_ADD) failed (Error: " << error << ")");
         return false;
     }
 
-    std::cout << "[TrayIcon] Tray icon added to system tray" << std::endl;
+    WT_LOG("[TrayIcon] Tray icon added to system tray");
     return true;
 }
 
 HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
-    std::cout << "[TrayIcon] Loading PNG icon using WIC: " << filePath << std::endl;
+    WT_LOG("[TrayIcon] Loading PNG icon using WIC: " << filePath);
 
     // 파일 존재 확인
     if (!fs::exists(filePath)) {
-        std::cerr << "[TrayIcon] PNG file not found: " << filePath << std::endl;
+        WT_ERR("[TrayIcon] PNG file not found: " << filePath);
         return LoadIcon(nullptr, IDI_APPLICATION);
     }
 
@@ -153,13 +153,12 @@ HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
     );
 
     if (FAILED(hr)) {
-        std::cerr << "[TrayIcon] Failed to create WIC factory (HRESULT: 0x"
-                  << std::hex << hr << ")" << std::endl;
+        WT_ERR("[TrayIcon] Failed to create WIC factory (HRESULT: 0x" << std::hex << hr << ")");
         if (comInitialized) CoUninitialize();
         return LoadIcon(nullptr, IDI_APPLICATION);
     }
 
-    std::cout << "[TrayIcon] ✅ WIC factory created successfully" << std::endl;
+    WT_LOG("[TrayIcon] ✅ WIC factory created successfully");
 
     const std::wstring wFilePath(filePath.begin(), filePath.end());
 
@@ -174,8 +173,7 @@ HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
     );
 
     if (FAILED(hr)) {
-        std::cerr << "[TrayIcon] Failed to create PNG decoder (HRESULT: 0x"
-                  << std::hex << hr << ")" << std::endl;
+        WT_ERR("[TrayIcon] Failed to create PNG decoder (HRESULT: 0x" << std::hex << hr << ")");
         pFactory->Release();
         if (comInitialized) CoUninitialize();
         return LoadIcon(nullptr, IDI_APPLICATION);
@@ -186,7 +184,7 @@ HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
     hr = pDecoder->GetFrame(0, &pFrame);
 
     if (FAILED(hr)) {
-        std::cerr << "[TrayIcon] Failed to get frame from PNG" << std::endl;
+        WT_ERR("[TrayIcon] Failed to get frame from PNG");
         pDecoder->Release();
         pFactory->Release();
         if (comInitialized) CoUninitialize();
@@ -196,13 +194,13 @@ HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
     // 원본 크기 확인
     UINT originalWidth, originalHeight;
     pFrame->GetSize(&originalWidth, &originalHeight);
-    std::cout << "[TrayIcon] Original PNG size: " << originalWidth << "x" << originalHeight << std::endl;
+    WT_LOG("[TrayIcon] Original PNG size: " << originalWidth << "x" << originalHeight);
 
     // 트레이 아이콘 크기 (시스템에서 권장하는 크기)
     int iconSize = GetSystemMetrics(SM_CXSMICON);  // 보통 16x16
     if (iconSize <= 0) iconSize = 32;  // 기본값
 
-    std::cout << "[TrayIcon] System tray icon size: " << iconSize << "x" << iconSize << std::endl;
+    WT_LOG("[TrayIcon] System tray icon size: " << iconSize << "x" << iconSize);
 
     // 스케일러 생성 (크기 조정)
     IWICBitmapScaler* pScaler = nullptr;
@@ -280,18 +278,18 @@ HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
                 DeleteObject(hMaskBitmap);
 
                 if (hIcon) {
-                    std::cout << "[TrayIcon] ✅ PNG icon converted to HICON successfully!" << std::endl;
+                    WT_LOG("[TrayIcon] ✅ PNG icon converted to HICON successfully!");
                 } else {
                     DWORD error = GetLastError();
-                    std::cerr << "[TrayIcon] CreateIconIndirect failed (Error: " << error << ")" << std::endl;
+                    WT_ERR("[TrayIcon] CreateIconIndirect failed (Error: " << error << ")");
                 }
             } else {
-                std::cerr << "[TrayIcon] Failed to copy pixels from WIC converter" << std::endl;
+                WT_ERR("[TrayIcon] Failed to copy pixels from WIC converter");
             }
 
             DeleteObject(hBitmap);
         } else {
-            std::cerr << "[TrayIcon] Failed to create DIB section" << std::endl;
+            WT_ERR("[TrayIcon] Failed to create DIB section");
         }
     }
 
@@ -307,10 +305,10 @@ HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
     }
 
     if (hIcon) {
-        std::cout << "[TrayIcon] ✅ PNG icon loaded successfully using WIC!" << std::endl;
+        WT_LOG("[TrayIcon] ✅ PNG icon loaded successfully using WIC!");
         return hIcon;
     } else {
-        std::cerr << "[TrayIcon] ❌ Failed to load PNG, using fallback icon" << std::endl;
+        WT_ERR("[TrayIcon] ❌ Failed to load PNG, using fallback icon");
         return LoadIcon(nullptr, IDI_APPLICATION);
     }
 }
@@ -395,7 +393,7 @@ void TrayIcon::OpenGitHubRepository() {
     const auto githubUrl = "https://github.com/Snow0406/Unity-Wakatime";
 
     const std::wstring wGithubUrl(githubUrl, githubUrl + strlen(githubUrl));
-    std::cout << "[TrayIcon] Opening GitHub repository: " << githubUrl << std::endl;
+    WT_LOG("[TrayIcon] Opening GitHub repository: " << githubUrl);
 
     ShellExecuteW(nullptr, L"open", wGithubUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
@@ -427,7 +425,7 @@ void TrayIcon::ShowContextMenu(const int x, const int y)
 {
     if (!hMenu)
     {
-        std::cout << "[TrayIcon] hMenu is NULL!" << std::endl;
+        WT_LOG("[TrayIcon] hMenu is NULL!");
         return;
     }
 
@@ -521,7 +519,7 @@ std::string TrayIcon::ShowApiKeyInputDialog()
 {
     std::string currentApiKey = Globals::GetWakaTimeClient()->GetMaskedApiKey();
 
-    std::cout << "[TrayIcon] Opening WakaTime API key page..." << std::endl;
+    WT_LOG("[TrayIcon] Opening WakaTime API key page...");
     ShellExecuteW(nullptr, L"open", L"https://wakatime.com/api-key",
                   nullptr, nullptr, SW_SHOWNORMAL);
 
@@ -565,7 +563,7 @@ std::string TrayIcon::GetClipboardText()
     if (!OpenClipboard(hwnd))
     {
         const DWORD error = GetLastError();
-        std::cerr << "[TrayIcon] Failed to open clipboard (Error: " << error << ")" << std::endl;
+        WT_ERR("[TrayIcon] Failed to open clipboard (Error: " << error << ")");
         return "";
     }
 
@@ -724,7 +722,7 @@ void TrayIcon::Shutdown()
 {
     if (!initialized) return;
 
-    std::cout << "[TrayIcon] Shutting down..." << std::endl;
+    WT_LOG("[TrayIcon] Shutting down...");
 
     Shell_NotifyIconW(NIM_DELETE, &nid);
 
@@ -747,7 +745,7 @@ void TrayIcon::Shutdown()
     }
 
     initialized = false;
-    std::cout << "[TrayIcon] Shutdown complete" << std::endl;
+    WT_LOG("[TrayIcon] Shutdown complete");
 }
 
 #pragma region Notification

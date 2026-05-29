@@ -3,14 +3,14 @@
 
 ProcessMonitor::ProcessMonitor()
 {
-    std::cout << "[ProcessMonitor] Initialized" << std::endl;
+    WT_LOG("[ProcessMonitor] Initialized");
 }
 
 ProcessMonitor::~ProcessMonitor()
 {
     CleanupWMI();
     activeInstances.clear();
-    std::cout << "[ProcessMonitor] Destroyed" << std::endl;
+    WT_LOG("[ProcessMonitor] Destroyed");
 }
 
 BSTR ProcessMonitor::StringToBSTR(const std::wstring &str)
@@ -36,7 +36,7 @@ bool ProcessMonitor::InitializeWMI()
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr))
     {
-        std::cerr << "[ProcessMonitor] COM initialization failed" << std::endl;
+        WT_ERR("[ProcessMonitor] COM initialization failed");
         return false;
     }
 
@@ -50,7 +50,7 @@ bool ProcessMonitor::InitializeWMI()
 
     if (FAILED(hr))
     {
-        std::cerr << "[ProcessMonitor] WMI Locator creation failed" << std::endl;
+        WT_ERR("[ProcessMonitor] WMI Locator creation failed");
         CoUninitialize();
         return false;
     }
@@ -68,14 +68,14 @@ bool ProcessMonitor::InitializeWMI()
 
     if (FAILED(hr))
     {
-        std::cerr << "[ProcessMonitor] WMI Service connection failed" << std::endl;
+        WT_ERR("[ProcessMonitor] WMI Service connection failed");
         pLocator->Release();
         CoUninitialize();
         return false;
     }
 
     wmiInitialized = true;
-    std::cout << "[ProcessMonitor] WMI initialized successfully" << std::endl;
+    WT_LOG("[ProcessMonitor] WMI initialized successfully");
     return true;
 }
 
@@ -155,7 +155,7 @@ void ProcessMonitor::CleanupWMI()
         }
         CoUninitialize();
         wmiInitialized = false;
-        std::cout << "[ProcessMonitor] WMI cleaned up" << std::endl;
+        WT_LOG("[ProcessMonitor] WMI cleaned up");
     }
 }
 
@@ -168,7 +168,7 @@ std::vector<UnityInstance> ProcessMonitor::ScanUnityProcesses()
     const HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE)
     {
-        std::cerr << "[ProcessMonitor] CreateToolhelp32Snapshot failed" << std::endl;
+        WT_ERR("[ProcessMonitor] CreateToolhelp32Snapshot failed");
         return foundInstances;
     }
 
@@ -197,7 +197,7 @@ std::vector<UnityInstance> ProcessMonitor::ScanUnityProcesses()
 
     CloseHandle(hSnapshot);
 
-    std::cout << "[ProcessMonitor] Scan complete. Found " << foundInstances.size() << " Unity instances" << std::endl;
+    WT_LOG("[ProcessMonitor] Scan complete. Found " << foundInstances.size() << " Unity instances");
     return foundInstances;
 }
 
@@ -207,7 +207,7 @@ std::string ProcessMonitor::GetProcessCommandLine(const DWORD pid)
 
     if (fullCommandLine.empty())
     {
-        std::cout << "[ProcessMonitor] Could not get command line for PID " << pid << std::endl;
+        WT_LOG("[ProcessMonitor] Could not get command line for PID " << pid);
         return "";
     }
 
@@ -215,13 +215,13 @@ std::string ProcessMonitor::GetProcessCommandLine(const DWORD pid)
 
     if (projectPath.empty())
     {
-        std::cout << "[ProcessMonitor] No -projectPath found in command line: " << fullCommandLine << std::endl;
+        WT_LOG("[ProcessMonitor] No -projectPath found in command line: " << fullCommandLine);
         return "";
     }
 
     if (!IsUnityProject(projectPath))
     {
-        std::cout << "[ProcessMonitor] Path is not a valid Unity project: " << projectPath << std::endl;
+        WT_LOG("[ProcessMonitor] Path is not a valid Unity project: " << projectPath);
         return "";
     }
 

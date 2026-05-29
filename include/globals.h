@@ -28,6 +28,15 @@
 
 namespace fs = std::filesystem;
 
+// Release(NDEBUG)에서는 인자 평가까지 컴파일아웃된다.
+#ifdef NDEBUG
+    #define WT_LOG(msg) ((void)0)
+    #define WT_ERR(msg) ((void)0)
+#else
+    #define WT_LOG(msg) do { std::cout << msg << std::endl; } while (0)
+    #define WT_ERR(msg) do { std::cerr << msg << std::endl; } while (0)
+#endif
+
 class WakaTimeClient;
 class FileWatcher;
 class ProcessMonitor;

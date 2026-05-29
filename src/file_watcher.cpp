@@ -9,19 +9,19 @@ namespace
 
 FileWatcher::FileWatcher()
 {
-    std::cout << "[FileWatcher] Initialized" << std::endl;
+    WT_LOG("[FileWatcher] Initialized");
 }
 
 FileWatcher::~FileWatcher()
 {
     StopAllWatching();
-    std::cout << "[FileWatcher] Destroyed" << std::endl;
+    WT_LOG("[FileWatcher] Destroyed");
 }
 
 void FileWatcher::SetChangeCallback(std::function<void(const FileChangeEvent &)> callback)
 {
     changeCallback = std::move(callback);
-    std::cout << "[FileWatcher] Change callback set" << std::endl;
+    WT_LOG("[FileWatcher] Change callback set");
 }
 
 bool FileWatcher::StartWatching(const std::string &projectPath, const std::string &projectName, const std::string &unityVersion)
@@ -37,7 +37,7 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
     // 프로젝트 경로가 존재하는지 확인
     if (!fs::exists(projectPath))
     {
-        std::cerr << "[FileWatcher] Project path does not exist: " << projectPath << std::endl;
+        WT_ERR("[FileWatcher] Project path does not exist: " << projectPath);
         return false;
     }
 
@@ -45,7 +45,7 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
     auto project = std::make_unique<WatchedProject>();
     if (project->stopEvent == nullptr || project->ioEvent == nullptr)
     {
-        std::cerr << "[FileWatcher] Failed to create watcher events for: " << projectPath << std::endl;
+        WT_ERR("[FileWatcher] Failed to create watcher events for: " << projectPath);
         return false;
     }
 
@@ -77,11 +77,11 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
     if (project->directoryHandle == INVALID_HANDLE_VALUE)
     {
         const DWORD error = GetLastError();
-        std::cerr << "[FileWatcher] Failed to open directory: " << projectPath << " (Error: " << error << ")" << std::endl;
+        WT_ERR("[FileWatcher] Failed to open directory: " << projectPath << " (Error: " << error << ")");
         return false;
     }
 
-    std::cout << "[FileWatcher] Started watching: " << projectName << " at " << projectPath << std::endl;
+    WT_LOG("[FileWatcher] Started watching: " << projectName << " at " << projectPath);
 
     // 감시 스레드 시작
     WatchedProject *projectPtr = project.get();
@@ -91,7 +91,7 @@ bool FileWatcher::StartWatching(const std::string &projectPath, const std::strin
     }
     catch (const std::system_error &e)
     {
-        std::cerr << "[FileWatcher] Failed to start watch thread for " << projectName << ": " << e.what() << std::endl;
+        WT_ERR("[FileWatcher] Failed to start watch thread for " << projectName << ": " << e.what());
         return false;
     }
 
@@ -108,11 +108,11 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
         project->stopEvent == nullptr ||
         project->ioEvent == nullptr)
     {
-        std::cerr << "[FileWatcher] Invalid watch project state, thread exit" << std::endl;
+        WT_ERR("[FileWatcher] Invalid watch project state, thread exit");
         return;
     }
 
-    std::cout << "[FileWatcher] Watch thread started for: " << project->projectName << std::endl;
+    WT_LOG("[FileWatcher] Watch thread started for: " << project->projectName);
 
     while (!project->shouldStop)
     {
@@ -138,7 +138,7 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
         {
             if (const DWORD error = GetLastError(); error != ERROR_IO_PENDING)
             {
-                std::cerr << "[FileWatcher] ReadDirectoryChangesW failed for " << project->projectName << " (Error: " << error << ")" << std::endl;
+                WT_ERR("[FileWatcher] ReadDirectoryChangesW failed for " << project->projectName << " (Error: " << error << ")");
                 break;
             }
         }
@@ -179,7 +179,7 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
                 {
                     if (const DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED && error != ERROR_IO_INCOMPLETE)
                     {
-                        std::cerr << "[FileWatcher] GetOverlappedResult failed for " << project->projectName << " (Error: " << error << ")" << std::endl;
+                        WT_ERR("[FileWatcher] GetOverlappedResult failed for " << project->projectName << " (Error: " << error << ")");
                     }
                     if (project->shouldStop)
                     {
@@ -190,17 +190,17 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
             }
 
             case (WAIT_OBJECT_0 + 1): // stopEvent 신호 (종료 요청)
-                std::cout << "[FileWatcher] Stop event received for: " << project->projectName << std::endl;
+                WT_LOG("[FileWatcher] Stop event received for: " << project->projectName);
                 goto thread_exit; // 즉시 종료
 
             default: // 에러
-                std::cerr << "[FileWatcher] WaitForMultipleObjects failed for " << project->projectName << " (Error: " << GetLastError() << ")" << std::endl;
+                WT_ERR("[FileWatcher] WaitForMultipleObjects failed for " << project->projectName << " (Error: " << GetLastError() << ")");
                 goto thread_exit;
         }
     }
 
 thread_exit:
-    std::cout << "[FileWatcher] Watch thread stopped for: " << project->projectName << std::endl;
+    WT_LOG("[FileWatcher] Watch thread stopped for: " << project->projectName);
 }
 
 void FileWatcher::ProcessFileChanges(char *buffer, DWORD bytesReturned, WatchedProject *project)
@@ -254,7 +254,7 @@ void FileWatcher::ProcessFileChanges(char *buffer, DWORD bytesReturned, WatchedP
                 event.action = info->Action;
                 event.timestamp = std::chrono::system_clock::now();
 
-                std::cout << "[FileWatcher] Change" << ": " << fileName << " in " << project->projectName << std::endl;
+                WT_LOG("[FileWatcher] Change" << ": " << fileName << " in " << project->projectName);
 
                 // 워커 스레드에서 직접 UI/앱 콜백을 호출하지 않고 큐에 적재
                 {
@@ -334,7 +334,7 @@ void FileWatcher::StopWatching(const std::string &projectPath)
         watchedProjects.erase(it);
     }
 
-    std::cout << "[FileWatcher] Stopping watch for: " << projectToStop->projectName << std::endl;
+    WT_LOG("[FileWatcher] Stopping watch for: " << projectToStop->projectName);
     projectToStop->shouldStop = true;
 
     if (projectToStop->stopEvent != nullptr)
@@ -360,7 +360,7 @@ void FileWatcher::StopAllWatching()
         projectsToStop.swap(watchedProjects);
     }
 
-    std::cout << "[FileWatcher] Stopping all watches..." << std::endl;
+    WT_LOG("[FileWatcher] Stopping all watches...");
 
     for (const auto &project: projectsToStop)
     {
@@ -384,7 +384,7 @@ void FileWatcher::StopAllWatching()
         }
     }
 
-    std::cout << "[FileWatcher] All watches stopped" << std::endl;
+    WT_LOG("[FileWatcher] All watches stopped");
 }
 
 void FileWatcher::DrainPendingEvents(const size_t maxEvents)

@@ -3,6 +3,7 @@
 #include "globals.h"
 #include <winhttp.h>    // Windows HTTP API
 #include <queue>
+#include <condition_variable>
 
 #pragma comment(lib, "winhttp.lib") // WinHTTP 라이브러리 링크
 
@@ -17,7 +18,6 @@ struct HeartbeatData {
     std::string language;           // Unity
     std::string editor;             // "Unity"
     std::string operating_system;   // "Windows"
-    std::string machine;            // 머신 이름
     int64_t time;                   // Unix timestamp
     bool is_write;                  // 파일 수정 여부
 
@@ -40,10 +40,12 @@ private:
     
     // HTTP 세션 관리
     HINTERNET hSession;           // WinHTTP 세션 핸들
+    HINTERNET hConnect;           // WinHTTP 연결 핸들 (heartbeat 간 재사용, keep-alive)
     bool initialized;             // 초기화 상태
-    
+
     // 비동기 전송 관리
     mutable std::mutex queueMutex;              // 큐 접근 동기화
+    std::condition_variable queueCv;            // 큐 대기/통지 (busy-poll 제거)
     std::queue<HeartbeatData> heartbeatQueue;   // 전송 대기 큐
     std::chrono::steady_clock::time_point lastQueuedAt;
     std::string lastQueuedEntity;
@@ -92,7 +94,7 @@ private:
      * @return 머신 이름
      */
     std::string GetMachineName();
-    
+
     /**
      * Unix timestamp 생성 (현재 시간)
      * @return Unix timestamp (초 단위)

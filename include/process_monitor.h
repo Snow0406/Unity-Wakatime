@@ -2,7 +2,7 @@
 
 #include "globals.h"
 #include <Wbemidl.h>    // WMI 인터페이스
-#include <map>
+#include <unordered_map>
 
 #pragma comment(lib, "wbemuuid.lib")
 #pragma comment(lib, "ole32.lib")
@@ -13,7 +13,7 @@
  */
 class ProcessMonitor {
 private:
-    std::map<DWORD, UnityInstance> activeInstances;
+    std::unordered_map<DWORD, UnityInstance> activeInstances;
     IWbemLocator* pLocator = nullptr;
     IWbemServices* pService = nullptr;
     bool wmiInitialized = false;
@@ -124,5 +124,5 @@ public:
      * 현재 활성화된 모든 Unity 인스턴스 반환
      * @return 현재 실행중인 인스턴스들
      */
-    const std::map<DWORD, UnityInstance>& GetActiveInstances() const;
+    const std::unordered_map<DWORD, UnityInstance>& GetActiveInstances() const;
 };

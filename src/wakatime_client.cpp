@@ -5,9 +5,22 @@ namespace
     constexpr size_t kMaxHeartbeatQueueSize = 256;
     constexpr auto kSameFileHeartbeatInterval = std::chrono::seconds(120);
     constexpr auto kSameFileWriteInterval = std::chrono::seconds(2);
+
+    std::string WideToUtf8(const wchar_t *value)
+    {
+        if (value == nullptr || value[0] == L'\0') return "";
+
+        const int len = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+        if (len <= 1) return "";
+
+        std::string result(len - 1, 0);
+        WideCharToMultiByte(CP_UTF8, 0, value, -1, &result[0], len, nullptr, nullptr);
+        return result;
+    }
 }
 
 WakaTimeClient::WakaTimeClient() : hSession(nullptr),
+                                   hConnect(nullptr),
                                    initialized(false),
                                    shouldStop(false),
                                    totalSent(0),
@@ -16,12 +29,13 @@ WakaTimeClient::WakaTimeClient() : hSession(nullptr),
     userAgent = "unity-wakatime/1.0 (Windows)";
     machineName = GetMachineName();
 
-    std::cout << "[WakaTimeClient] Created for machine: " << machineName << std::endl;
+    WT_LOG("[WakaTimeClient] Created for machine: " << machineName);
 }
 
 WakaTimeClient::~WakaTimeClient()
 {
     shouldStop = true;
+    queueCv.notify_all();
     if (senderThread.joinable())
     {
         senderThread.join();
@@ -29,13 +43,12 @@ WakaTimeClient::~WakaTimeClient()
 
     CleanupHttpSession(); // HTTP 세션 정리
 
-    std::cout << "[WakaTimeClient] Destroyed (Sent: " << totalSent.load() << ", Failed: " << totalFailed.load() << ")"
-            << std::endl;
+    WT_LOG("[WakaTimeClient] Destroyed (Sent: " << totalSent.load() << ", Failed: " << totalFailed.load() << ")");
 }
 
 bool WakaTimeClient::Initialize(const std::string &providedApiKey)
 {
-    std::cout << "[WakaTimeClient] Initializing..." << std::endl;
+    WT_LOG("[WakaTimeClient] Initializing...");
 
     if (!providedApiKey.empty()) // API 키 설정
     {
@@ -47,7 +60,7 @@ bool WakaTimeClient::Initialize(const std::string &providedApiKey)
         // 파일에서 로드 시도
         if (!LoadApiKeyFromFile())
         {
-            std::cerr << "[WakaTimeClient] No API key provided and failed to load from file" << std::endl;
+            WT_ERR("[WakaTimeClient] No API key provided and failed to load from file");
             return false;
         }
     }
@@ -55,7 +68,7 @@ bool WakaTimeClient::Initialize(const std::string &providedApiKey)
     // HTTP 세션 초기화
     if (!InitializeHttpSession())
     {
-        std::cerr << "[WakaTimeClient] Failed to initialize HTTP session" << std::endl;
+        WT_ERR("[WakaTimeClient] Failed to initialize HTTP session");
         return false;
     }
 
@@ -63,16 +76,17 @@ bool WakaTimeClient::Initialize(const std::string &providedApiKey)
     senderThread = std::thread(&WakaTimeClient::SenderThreadFunction, this);
 
     initialized = true;
-    std::cout << "[WakaTimeClient] Initialized successfully with API key" << std::endl;
+    WT_LOG("[WakaTimeClient] Initialized successfully with API key");
 
     return true;
 }
 
 bool WakaTimeClient::ReInitialize(const std::string& newApiKey)
 {
-    std::cout << "[WakaTimeClient] Reinitializing with new API key..." << std::endl;
+    WT_LOG("[WakaTimeClient] Reinitializing with new API key...");
 
     shouldStop = true;
+    queueCv.notify_all();
     if (senderThread.joinable())
     {
         senderThread.join();
@@ -101,21 +115,37 @@ bool WakaTimeClient::InitializeHttpSession()
     if (hSession == nullptr)
     {
         const DWORD error = GetLastError();
-        std::cerr << "[WakaTimeClient] WinHttpOpen failed (Error: " << error << ")" << std::endl;
+        WT_ERR("[WakaTimeClient] WinHttpOpen failed (Error: " << error << ")");
         return false;
     }
 
-    std::cout << "[WakaTimeClient] HTTP session created" << std::endl;
+    // 연결 핸들을 한 번 생성해 heartbeat 간 재사용한다(keep-alive로 TLS 핸드셰이크 절감).
+    hConnect = WinHttpConnect(hSession, L"api.wakatime.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (hConnect == nullptr)
+    {
+        const DWORD error = GetLastError();
+        WT_ERR("[WakaTimeClient] WinHttpConnect failed (Error: " << error << ")");
+        WinHttpCloseHandle(hSession);
+        hSession = nullptr;
+        return false;
+    }
+
+    WT_LOG("[WakaTimeClient] HTTP session created");
     return true;
 }
 
 void WakaTimeClient::CleanupHttpSession()
 {
+    if (hConnect != nullptr)
+    {
+        WinHttpCloseHandle(hConnect);
+        hConnect = nullptr;
+    }
     if (hSession != nullptr)
     {
         WinHttpCloseHandle(hSession);
         hSession = nullptr;
-        std::cout << "[WakaTimeClient] HTTP session closed" << std::endl;
+        WT_LOG("[WakaTimeClient] HTTP session closed");
     }
 }
 
@@ -127,12 +157,7 @@ std::string WakaTimeClient::GetMachineName()
     if (GetComputerNameW(computerName, &size))
     {
         // 와이드 문자를 일반 문자로 변환
-        if (const int len = WideCharToMultiByte(CP_UTF8, 0, computerName, -1, nullptr, 0, nullptr, nullptr); len > 0)
-        {
-            std::string result(len - 1, 0);
-            WideCharToMultiByte(CP_UTF8, 0, computerName, -1, &result[0], len, nullptr, nullptr);
-            return result;
-        }
+        return WideToUtf8(computerName);
     }
 
     return "Unknown";
@@ -197,7 +222,6 @@ std::string WakaTimeClient::HeartbeatToJson(const HeartbeatData &heartbeat)
             << R"("language":")" << heartbeat.language << "\","
             << R"("editor":")" << heartbeat.editor << "\","
             << R"("operating_system":")" << heartbeat.operating_system << "\","
-            << R"("machine":")" << EscapeJsonString(heartbeat.machine) << "\","
             << R"("time":)" << heartbeat.time << ","
             << R"("is_write":)" << (heartbeat.is_write ? "true" : "false")
             << "}";
@@ -262,23 +286,20 @@ bool WakaTimeClient::SendHttpRequest(const std::string &jsonData)
 {
     if (!initialized || hSession == nullptr)
     {
-        std::cerr << "[WakaTimeClient] Not initialized" << std::endl;
+        WT_ERR("[WakaTimeClient] Not initialized");
         return false;
     }
 
-    // WinHttpConnect: 서버 연결
-    const HINTERNET hConnect = WinHttpConnect(
-        hSession,
-        L"api.wakatime.com",            // 서버 주소
-        INTERNET_DEFAULT_HTTPS_PORT,    // HTTPS 포트 (443)
-        0
-    );
-
+    // 끊겼던 경우 재연결
     if (hConnect == nullptr)
     {
-        const DWORD error = GetLastError();
-        std::cerr << "[WakaTimeClient] WinHttpConnect failed (Error: " << error << ")" << std::endl;
-        return false;
+        hConnect = WinHttpConnect(hSession, L"api.wakatime.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (hConnect == nullptr)
+        {
+            const DWORD error = GetLastError();
+            WT_ERR("[WakaTimeClient] WinHttpConnect failed (Error: " << error << ")");
+            return false;
+        }
     }
 
     // WinHttpOpenRequest: HTTP 요청 생성
@@ -295,8 +316,7 @@ bool WakaTimeClient::SendHttpRequest(const std::string &jsonData)
     if (hRequest == nullptr)
     {
         const DWORD error = GetLastError();
-        std::cerr << "[WakaTimeClient] WinHttpOpenRequest failed (Error: " << error << ")" << std::endl;
-        WinHttpCloseHandle(hConnect);
+        WT_ERR("[WakaTimeClient] WinHttpOpenRequest failed (Error: " << error << ")");
         return false;
     }
 
@@ -304,15 +324,18 @@ bool WakaTimeClient::SendHttpRequest(const std::string &jsonData)
     std::string authHeader = "Authorization: Basic " + Base64Encode(apiKey + ":");
     std::string contentTypeHeader = "Content-Type: application/json";
     std::string userAgentHeader = "User-Agent: " + userAgent;
+    std::string machineHeader = "X-Machine-Name: " + machineName;
 
     // 와이드 문자로 변환해서 헤더 추가
     const std::wstring wAuthHeader(authHeader.begin(), authHeader.end());
     const std::wstring wContentTypeHeader(contentTypeHeader.begin(), contentTypeHeader.end());
     const std::wstring wUserAgentHeader(userAgentHeader.begin(), userAgentHeader.end());
+    const std::wstring wMachineHeader(machineHeader.begin(), machineHeader.end());
 
     WinHttpAddRequestHeaders(hRequest, wAuthHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
     WinHttpAddRequestHeaders(hRequest, wContentTypeHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
     WinHttpAddRequestHeaders(hRequest, wUserAgentHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
+    WinHttpAddRequestHeaders(hRequest, wMachineHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
 
     // HTTP 요청 전송
     const BOOL result = WinHttpSendRequest(
@@ -326,6 +349,7 @@ bool WakaTimeClient::SendHttpRequest(const std::string &jsonData)
     );
 
     bool success = false;
+    bool transportError = false;
 
     if (result)
     {
@@ -351,67 +375,77 @@ bool WakaTimeClient::SendHttpRequest(const std::string &jsonData)
                 else
                 {
                     ++totalFailed;
-                    std::cout << "[WakaTimeClient] ❌ Heartbeat failed (HTTP " << statusCode << ")" << std::endl;
+                    WT_LOG("[WakaTimeClient] ❌ Heartbeat failed (HTTP " << statusCode << ")");
                 }
             }
+        }
+        else
+        {
+            transportError = true;
+            ++totalFailed;
+            WT_ERR("[WakaTimeClient] WinHttpReceiveResponse failed (Error: " << GetLastError() << ")");
         }
     }
     else
     {
         const DWORD error = GetLastError();
+        transportError = true;
         ++totalFailed;
-        std::cerr << "[WakaTimeClient] WinHttpSendRequest failed (Error: " << error << ")" << std::endl;
+        WT_ERR("[WakaTimeClient] WinHttpSendRequest failed (Error: " << error << ")");
     }
 
     WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
+
+    // 전송/수신 단계 실패는 연결이 끊겼을 수 있으므로 캐시한 연결을 폐기 → 다음 전송에서 재연결
+    if (transportError && hConnect != nullptr)
+    {
+        WinHttpCloseHandle(hConnect);
+        hConnect = nullptr;
+    }
 
     return success;
 }
 
 void WakaTimeClient::SenderThreadFunction()
 {
-    std::cout << "[WakaTimeClient] Sender thread started" << std::endl;
+    WT_LOG("[WakaTimeClient] Sender thread started");
 
-    while (!shouldStop)
+    while (true)
     {
         HeartbeatData heartbeat;
-        bool hasData = false;
 
-        // 큐에서 heartbeat 가져오기
+        // 큐에 데이터가 들어오거나 종료될 때까지 블록 (busy-poll 제거)
         {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            if (!heartbeatQueue.empty())
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCv.wait(lock, [this] { return shouldStop.load() || !heartbeatQueue.empty(); });
+
+            if (shouldStop && heartbeatQueue.empty())
             {
-                heartbeat = heartbeatQueue.front();
-                heartbeatQueue.pop();
-                hasData = true;
+                break;
             }
+
+            heartbeat = heartbeatQueue.front();
+            heartbeatQueue.pop();
         }
 
-        if (hasData)
-        {
-            std::string jsonData = HeartbeatToJson(heartbeat);
+        const std::string jsonData = HeartbeatToJson(heartbeat);
+        SendHttpRequest(jsonData);
 
-            SendHttpRequest(jsonData);
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-        }
-        else
+        // 연속 전송 레이트리밋. 종료 시 즉시 깨어나도록 wait_for 사용
         {
-            // 큐가 비어있으면 잠시 대기
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCv.wait_for(lock, std::chrono::milliseconds(1000), [this] { return shouldStop.load(); });
         }
     }
 
-    std::cout << "[WakaTimeClient] Sender thread stopped" << std::endl;
+    WT_LOG("[WakaTimeClient] Sender thread stopped");
 }
 
 void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::string &projectName, const std::string& unityVersion, const bool isWrite)
 {
     if (!initialized)
     {
-        std::cerr << "[WakaTimeClient] Not initialized, cannot send heartbeat" << std::endl;
+        WT_ERR("[WakaTimeClient] Not initialized, cannot send heartbeat");
         return;
     }
 
@@ -420,7 +454,6 @@ void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::strin
     heartbeat.entity = filePath;
     heartbeat.project = projectName;
     heartbeat.language = "Unity";
-    heartbeat.machine = machineName;
     heartbeat.time = GetUnixTimestamp();
     heartbeat.is_write = isWrite;
 
@@ -457,6 +490,7 @@ void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::strin
         lastQueuedAt = now;
         lastQueuedEntity = heartbeat.entity;
         lastQueuedProject = heartbeat.project;
+        queueCv.notify_one();
     }
 }
 
@@ -492,7 +526,7 @@ bool WakaTimeClient::LoadApiKeyFromFile()
     std::ifstream file(configPath);
     if (!file.is_open())
     {
-        std::cout << "[WakaTimeClient] Config file not found: " << configPath << std::endl;
+        WT_LOG("[WakaTimeClient] Config file not found: " << configPath);
         return false;
     }
 
@@ -503,11 +537,11 @@ bool WakaTimeClient::LoadApiKeyFromFile()
 
     if (apiKey.empty())
     {
-        std::cout << "[WakaTimeClient] Empty API key in config file" << std::endl;
+        WT_LOG("[WakaTimeClient] Empty API key in config file");
         return false;
     }
 
-    std::cout << "[WakaTimeClient] API key loaded from file: " << GetMaskedApiKey() << std::endl;
+    WT_LOG("[WakaTimeClient] API key loaded from file: " << GetMaskedApiKey());
     return true;
 }
 
@@ -518,24 +552,24 @@ bool WakaTimeClient::SaveApiKeyToFile(const std::string &key)
     std::ofstream file(configPath);
     if (!file.is_open())
     {
-        std::cerr << "[WakaTimeClient] Failed to save API key to: " << configPath << std::endl;
+        WT_ERR("[WakaTimeClient] Failed to save API key to: " << configPath);
         return false;
     }
 
     file << key << std::endl;
     file.close();
 
-    std::cout << "[WakaTimeClient] API key saved to: " << configPath << std::endl;
+    WT_LOG("[WakaTimeClient] API key saved to: " << configPath);
     return true;
 }
 
 void WakaTimeClient::FlushQueue()
 {
-    std::cout << "[WakaTimeClient] Flushing queue..." << std::endl;
+    WT_LOG("[WakaTimeClient] Flushing queue...");
 
     if (const size_t remaining = GetQueueSize(); remaining == 0)
     {
-        std::cout << "[WakaTimeClient] Queue is empty" << std::endl;
+        WT_LOG("[WakaTimeClient] Queue is empty");
         return;
     }
 
@@ -547,13 +581,13 @@ void WakaTimeClient::FlushQueue()
     {
         if (auto elapsed = std::chrono::steady_clock::now() - startTime; elapsed > timeout)
         {
-            std::cout << "[WakaTimeClient] Flush timeout, " << GetQueueSize() << " items remaining" << std::endl;
+            WT_LOG("[WakaTimeClient] Flush timeout, " << GetQueueSize() << " items remaining");
             break;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    std::cout << "[WakaTimeClient] Queue flushed" << std::endl;
+    WT_LOG("[WakaTimeClient] Queue flushed");
 }
 
