@@ -1,8 +1,6 @@
-﻿name: Build Unity WakaTime
+name: Build Unity WakaTime
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
   release:
@@ -13,9 +11,9 @@ env:
 
 jobs:
   build-test:
-    name: Build Test (Push & PR)
+    name: Build Test (PR)
     runs-on: windows-latest
-    if: (github.event_name == 'push' && github.ref_type == 'branch') || github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request'
 
     steps:
     - name: Checkout Repository
