@@ -13,9 +13,11 @@ private:
 
 public:
    /**
-    * 포커스 상태 확인
+    * 포그라운드 창 변경 시 호출 (SetWinEventHook 콜백에서 구동).
+    * 클래스명에 "Unity"가 포함되면 포커스 전이로 판정한다.
+    * @param hwnd 새 포그라운드 창 핸들 (nullptr 가능)
     */
-   void CheckFocused();
+   void OnForegroundChanged(HWND hwnd);
 
    /**
     * 2분마다 호출

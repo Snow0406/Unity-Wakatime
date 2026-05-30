@@ -58,6 +58,9 @@ void OnTrayExit()
 {
     WT_LOG("[Main] Exit requested from tray");
     Globals::RequestExit();
+    // 메시지 펌프(GetMessage)를 깨워 정상 종료시킨다. 트레이 메뉴 핸들러는
+    // 메인 스레드(WndProc)에서 동기 호출되므로 여기서 PostQuitMessage가 안전하다.
+    PostQuitMessage(0);
 }
 
 void OnTrayShowStatus()
@@ -241,6 +244,15 @@ void InitialUnityProjectScan()
     WT_LOG("[Main] Initial scan complete. Watching " << instances.size() << " Unity projects");
 }
 
+// 포그라운드 창 변경 이벤트 콜백 (SetWinEventHook).
+// WINEVENT_OUTOFCONTEXT라 메인 스레드의 메시지 펌프 중 디스패치되므로 마샬링 불필요.
+void CALLBACK FocusWinEventProc(HWINEVENTHOOK, const DWORD event, const HWND hwnd,
+                                const LONG idObject, LONG, DWORD, DWORD)
+{
+    if (event != EVENT_SYSTEM_FOREGROUND || idObject != OBJID_WINDOW) return;
+    if (g_unityFocusDetector) g_unityFocusDetector->OnForegroundChanged(hwnd);
+}
+
 int main()
 {
     WT_LOG("[Main] Unity WakaTime Monitor Starting...");
@@ -282,6 +294,11 @@ int main()
     g_fileWatcher = &fileWatcher;
 
     fileWatcher.SetChangeCallback(OnFileChanged);
+    // 워커 스레드의 파일 변경 → 메인 스레드로 PostMessage 마샬링 (InitialScan 이전에 설치)
+    fileWatcher.SetNotifyCallback([&trayIcon]()
+    {
+        trayIcon.NotifyFileEvent();
+    });
 
     UnityFocusDetector unityFocusDetector;
     g_unityFocusDetector = &unityFocusDetector;
@@ -296,43 +313,40 @@ int main()
 
     WT_LOG("\n[Main] Unity WakaTime is now running in background!");
 
-    auto lastScan = std::chrono::steady_clock::now();
-    const auto scanInterval = std::chrono::seconds(10);
-
-    while (!Globals::ShouldExit())
+    // 이벤트 허브 콜백 배선 (TrayIcon의 메시지 펌프에서 디스패치)
+    trayIcon.SetFileEventCallback([]()
     {
-        if (g_fileWatcher)
-        {
-            g_fileWatcher->DrainPendingEvents();
-        }
+        if (g_fileWatcher) g_fileWatcher->DrainPendingEvents();
+    });
 
-        if (g_unityFocusDetector) {
-            g_unityFocusDetector->CheckFocused();
-            g_unityFocusDetector->SendPeriodicHeartbeat();
-        }
+    trayIcon.SetProcessScanCallback([&processMonitor]()
+    {
+        std::vector<UnityInstance> started;
+        std::vector<UnityInstance> closed;
+        processMonitor.PollChanges(started, closed);
+        if (!started.empty()) HandleNewUnityInstances(started);
+        if (!closed.empty()) HandleClosedUnityInstances(closed);
+    });
 
-        int msgCount = trayIcon.ProcessMessages();
-        if (msgCount > 5)  std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 많은 메시지 → 빠른 처리
-        else if (msgCount > 0) std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 일부 메시지 → 보통 처리
-        else std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // 메시지 없음 → 여유 있게
+    trayIcon.SetPeriodicTickCallback([]()
+    {
+        if (g_unityFocusDetector) g_unityFocusDetector->SendPeriodicHeartbeat();
+    });
 
-        if (auto now = std::chrono::steady_clock::now(); now - lastScan >= scanInterval)
-        {
-            // 새로운 Unity 인스턴스 감지
-            if (auto newInstances = processMonitor.GetNewInstances(); !newInstances.empty())
-            {
-                HandleNewUnityInstances(newInstances);
-            }
+    // 포커스 추적: SetWinEventHook(OUTOFCONTEXT) → 콜백이 메인 펌프에서 디스패치됨 (매초 폴링 제거)
+    const HWINEVENTHOOK focusHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+        nullptr, FocusWinEventProc, 0, 0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
-            // 종료된 Unity 인스턴스 감지
-            if (auto closedInstances = processMonitor.GetClosedInstances(); !closedInstances.empty())
-            {
-                HandleClosedUnityInstances(closedInstances);
-            }
+    // 훅 설치 시점에 이미 Unity가 포그라운드일 수 있으므로 초기 상태 1회 캡처
+    unityFocusDetector.OnForegroundChanged(GetForegroundWindow());
 
-            lastScan = now;
-        }
-    }
+    // 메시지 펌프: idle 시 GetMessage가 커널에서 블록되어 CPU ≈ 0,
+    // 파일/포커스/타이머/트레이 이벤트에만 깨어난다. WM_QUIT까지 블록.
+    trayIcon.RunMessageLoop();
+
+    if (focusHook) UnhookWinEvent(focusHook);
 
     WT_LOG("\n[Main] Shutting down Unity WakaTime...");
     trayIcon.ShowInfoNotification("Unity WakaTime shutting down...");

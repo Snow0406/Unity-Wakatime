@@ -2,30 +2,24 @@
 
 #include <utility>
 
-void UnityFocusDetector::CheckFocused()
+void UnityFocusDetector::OnForegroundChanged(const HWND hwnd)
 {
-    const HWND focusedWindow = GetForegroundWindow();
-    if (focusedWindow == nullptr)
+    bool isCurrentUnityFocused = false;
+
+    if (hwnd != nullptr)
     {
-        if (isUnityFocused)
+        WCHAR className[256];
+        if (GetClassNameW(hwnd, className, 256) > 0)
         {
-            isUnityFocused = false;
-            if (unfocusCallback) unfocusCallback();
+            isCurrentUnityFocused = (std::wstring(className).find(L"Unity") != std::wstring::npos);
         }
-        return;
     }
 
-    WCHAR className[256];
-    GetClassName(focusedWindow, className, 256);
-    const std::wstring classStr(className);
-
-    const bool isCurrentUnityFocused = (classStr.find(L"Unity") != std::wstring::npos);
     if (isCurrentUnityFocused && !isUnityFocused)
     {
         isUnityFocused = true;
         lastHeartbeat = std::chrono::steady_clock::now();
         if (focusCallback) focusCallback();
-
     }
     else if (!isCurrentUnityFocused && isUnityFocused)
     {

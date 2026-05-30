@@ -492,27 +492,35 @@ void TrayIcon::HandleMenuCommand(int menuId)
 }
 
 
-int TrayIcon::ProcessMessages()
+int TrayIcon::RunMessageLoop()
 {
     if (!initialized) return 0;
 
-    MSG msg;
-    int processedCount = 0;
+    // 이벤트화 타이머 설치: 프로세스 스캔(10초), 포커스 유지 시 주기 heartbeat(2분)
+    SetTimer(hwnd, TIMER_PROCESS_SCAN, PROCESS_SCAN_INTERVAL_MS, nullptr);
+    SetTimer(hwnd, TIMER_PERIODIC_HEARTBEAT, PERIODIC_HEARTBEAT_INTERVAL_MS, nullptr);
 
-    // PeekMessage로 논블로킹 방식으로 메시지 처리
-    while (PeekMessage(&msg, hwnd, 0, 0, PM_REMOVE))
+    // 정석 메시지 펌프: idle 시 GetMessage가 커널에서 블록되어 CPU ≈ 0.
+    // hwnd=nullptr → 스레드 메시지(WM_QUIT)와 WinEvent 훅 콜백까지 모두 수신/디스패치.
+    MSG msg;
+    BOOL result;
+    while ((result = GetMessage(&msg, nullptr, 0, 0)) != 0)
     {
-        processedCount++;
+        if (result == -1) break; // GetMessage 오류
         TranslateMessage(&msg);
         DispatchMessage(&msg);
-
-        if (msg.message == WM_QUIT)
-        {
-            break;
-        }
     }
 
-    return processedCount;
+    KillTimer(hwnd, TIMER_PROCESS_SCAN);
+    KillTimer(hwnd, TIMER_PERIODIC_HEARTBEAT);
+
+    return static_cast<int>(msg.wParam);
+}
+
+void TrayIcon::NotifyFileEvent()
+{
+    if (!initialized || hwnd == nullptr) return;
+    PostMessage(hwnd, WM_APP_FILE_EVENT, 0, 0);
 }
 
 std::string TrayIcon::ShowApiKeyInputDialog()
@@ -639,6 +647,21 @@ LRESULT TrayIcon::HandleWindowMessage(const HWND hwnd, const UINT msg, const WPA
 
         case WM_COMMAND:
             HandleMenuCommand(LOWORD(wParam));
+            return 0;
+
+        case WM_APP_FILE_EVENT:
+            if (onFileEvent) onFileEvent();
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == TIMER_PROCESS_SCAN)
+            {
+                if (onProcessScan) onProcessScan();
+            }
+            else if (wParam == TIMER_PERIODIC_HEARTBEAT)
+            {
+                if (onPeriodicTick) onPeriodicTick();
+            }
             return 0;
 
         case WM_DESTROY:
@@ -792,6 +815,21 @@ void TrayIcon::SetShowSettingsCallback(const std::function<void()> &callback)
 void TrayIcon::SetApiKeyChangeCallback(const std::function<void(const std::string &)> &callback)
 {
     onApiKeyChange = callback;
+}
+
+void TrayIcon::SetFileEventCallback(const std::function<void()> &callback)
+{
+    onFileEvent = callback;
+}
+
+void TrayIcon::SetProcessScanCallback(const std::function<void()> &callback)
+{
+    onProcessScan = callback;
+}
+
+void TrayIcon::SetPeriodicTickCallback(const std::function<void()> &callback)
+{
+    onPeriodicTick = callback;
 }
 
 #pragma endregion Callbacks

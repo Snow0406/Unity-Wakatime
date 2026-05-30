@@ -24,6 +24,12 @@ void FileWatcher::SetChangeCallback(std::function<void(const FileChangeEvent &)>
     WT_LOG("[FileWatcher] Change callback set");
 }
 
+void FileWatcher::SetNotifyCallback(std::function<void()> callback)
+{
+    notifyCallback = std::move(callback);
+    WT_LOG("[FileWatcher] Notify callback set");
+}
+
 bool FileWatcher::StartWatching(const std::string &projectPath, const std::string &projectName, const std::string &unityVersion)
 {
     std::lock_guard<std::mutex> lock(projectsMutex);
@@ -265,6 +271,12 @@ void FileWatcher::ProcessFileChanges(char *buffer, DWORD bytesReturned, WatchedP
                     }
                     pendingEvents.emplace_back(std::move(event));
                 }
+
+                // 메인 스레드에 통지 (코얼레싱: 이미 예약돼 있으면 추가 post 생략)
+                if (notifyCallback && !notifyScheduled.exchange(true))
+                {
+                    notifyCallback();
+                }
             }
         }
 
@@ -394,7 +406,11 @@ void FileWatcher::DrainPendingEvents(const size_t maxEvents)
         return;
     }
 
+    // 드레인 시작 전에 예약 플래그를 내려, 이 시점 이후 도착하는 이벤트는 새 통지를 post하도록 한다.
+    notifyScheduled.store(false);
+
     std::vector<FileChangeEvent> localEvents;
+    bool moreRemaining = false;
     {
         std::lock_guard<std::mutex> lock(pendingEventsMutex);
         if (pendingEvents.empty())
@@ -409,11 +425,19 @@ void FileWatcher::DrainPendingEvents(const size_t maxEvents)
             localEvents.emplace_back(std::move(pendingEvents.front()));
             pendingEvents.pop_front();
         }
+
+        moreRemaining = !pendingEvents.empty();
     }
 
     for (const auto &event: localEvents)
     {
         changeCallback(event);
+    }
+
+    // maxEvents 한도로 다 비우지 못했으면 다음 처리를 위해 통지를 다시 예약
+    if (moreRemaining && notifyCallback && !notifyScheduled.exchange(true))
+    {
+        notifyCallback();
     }
 }
 

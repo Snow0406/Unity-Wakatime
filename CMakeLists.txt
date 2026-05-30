@@ -50,7 +50,6 @@ if(WIN32)
                 winhttp
                 shell32
                 psapi
-                wbemuuid
                 ole32
                 oleaut32
                 windowscodecs
@@ -63,7 +62,6 @@ if(WIN32)
                 winhttp
                 shell32
                 psapi
-                wbemuuid
                 ole32
                 oleaut32
                 windowscodecs
