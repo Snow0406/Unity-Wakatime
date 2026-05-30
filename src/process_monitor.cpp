@@ -1,162 +1,144 @@
 ﻿#include "process_monitor.h"
 #include <tlhelp32.h>   // Windows 프로세스 스냅샷 API
+#include <winternl.h>   // NtQueryInformationProcess, PEB, RTL_USER_PROCESS_PARAMETERS
+
+namespace
+{
+    // ntdll의 NtQueryInformationProcess를 동적 로드해 ntdll 링크 의존을 피한다.
+    using NtQueryInformationProcess_t = NTSTATUS(NTAPI *)(
+        HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
+    NtQueryInformationProcess_t GetNtQueryInformationProcess()
+    {
+        static const auto fn = []() -> NtQueryInformationProcess_t
+        {
+            if (const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
+            {
+                return reinterpret_cast<NtQueryInformationProcess_t>(
+                    reinterpret_cast<void *>(GetProcAddress(ntdll, "NtQueryInformationProcess")));
+            }
+            return nullptr;
+        }();
+        return fn;
+    }
+}
 
 ProcessMonitor::ProcessMonitor()
 {
-    std::cout << "[ProcessMonitor] Initialized" << std::endl;
+    WT_LOG("[ProcessMonitor] Initialized");
 }
 
 ProcessMonitor::~ProcessMonitor()
 {
-    CleanupWMI();
     activeInstances.clear();
-    std::cout << "[ProcessMonitor] Destroyed" << std::endl;
+    WT_LOG("[ProcessMonitor] Destroyed");
 }
 
-BSTR ProcessMonitor::StringToBSTR(const std::wstring &str)
+std::string ProcessMonitor::GetCommandLineViaPeb(const DWORD pid)
 {
-    return SysAllocString(str.c_str());
-}
+    const auto NtQueryInformationProcess = GetNtQueryInformationProcess();
+    if (NtQueryInformationProcess == nullptr) return "";
 
-std::string ProcessMonitor::BSTRToString(const BSTR bstr)
-{
-    if (bstr == nullptr) return "";
+    const HANDLE hProcess = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (hProcess == nullptr) return "";
 
-    const int len = WideCharToMultiByte(CP_UTF8, 0, bstr, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return "";
-
-    std::string result(len - 1, 0);
-    WideCharToMultiByte(CP_UTF8, 0, bstr, -1, &result[0], len, nullptr, nullptr);
-
-    return result;
-}
-
-bool ProcessMonitor::InitializeWMI()
-{
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(hr))
-    {
-        std::cerr << "[ProcessMonitor] COM initialization failed" << std::endl;
-        return false;
-    }
-
-    hr = CoInitializeSecurity(
-        nullptr, -1, nullptr, nullptr,
-        RPC_C_AUTHN_LEVEL_NONE, RPC_C_IMP_LEVEL_IMPERSONATE,
-        nullptr, EOAC_NONE, nullptr);
-
-    hr = CoCreateInstance(CLSID_WbemLocator, nullptr,
-                          CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID *) &pLocator);
-
-    if (FAILED(hr))
-    {
-        std::cerr << "[ProcessMonitor] WMI Locator creation failed" << std::endl;
-        CoUninitialize();
-        return false;
-    }
-
-    const BSTR strNetworkResource = StringToBSTR(L"ROOT\\CIMV2");
-
-    hr = pLocator->ConnectServer(
-        strNetworkResource,
-        nullptr, nullptr, nullptr,
-        0, nullptr, nullptr,
-        &pService
-    );
-
-    SysFreeString(strNetworkResource);
-
-    if (FAILED(hr))
-    {
-        std::cerr << "[ProcessMonitor] WMI Service connection failed" << std::endl;
-        pLocator->Release();
-        CoUninitialize();
-        return false;
-    }
-
-    wmiInitialized = true;
-    std::cout << "[ProcessMonitor] WMI initialized successfully" << std::endl;
-    return true;
-}
-
-std::string ProcessMonitor::GetRealCommandLine(const DWORD pid)
-{
-    if (!wmiInitialized && !InitializeWMI()) return "";
-
-    // WQL 쿼리 생성 - 특정 프로세스 ID의 커맨드 라인 가져오기
     std::string commandLine;
-    const std::wstring query = L"SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + std::to_wstring(pid);
 
-    IEnumWbemClassObject *pEnumerator = nullptr;
-
-    const BSTR strQueryLanguage = StringToBSTR(L"WQL");
-    const BSTR strQuery = StringToBSTR(query);
-
-    // 쿼리 실행
-    HRESULT hr = pService->ExecQuery(
-        strQueryLanguage,
-        strQuery,
-        WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
-        nullptr,
-        &pEnumerator);
-
-    SysFreeString(strQueryLanguage);
-    SysFreeString(strQuery);
-
-    if (SUCCEEDED(hr))
+    do
     {
-        IWbemClassObject *pObj = nullptr;
-        ULONG returnValue = 0;
-
-        // 결과 가져오기
-        hr = pEnumerator->Next(WBEM_INFINITE, 1, &pObj, &returnValue);
-        if (SUCCEEDED(hr) && returnValue > 0)
+        // 1) PEB 주소 조회
+        PROCESS_BASIC_INFORMATION pbi;
+        ZeroMemory(&pbi, sizeof(pbi));
+        ULONG returnLength = 0;
+        if (const NTSTATUS status = NtQueryInformationProcess(
+                hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), &returnLength);
+            status < 0 || pbi.PebBaseAddress == nullptr)
         {
-            VARIANT cmdLineVariant;
-            VariantInit(&cmdLineVariant);
-
-            // CommandLine 속성 가져오기
-            hr = pObj->Get(L"CommandLine", 0, &cmdLineVariant, nullptr, nullptr);
-            if (SUCCEEDED(hr) && cmdLineVariant.vt == VT_BSTR && cmdLineVariant.bstrVal != nullptr)
-            {
-                const int len = WideCharToMultiByte(CP_UTF8, 0, cmdLineVariant.bstrVal, -1,
-                                                    nullptr, 0, nullptr, nullptr);
-                if (len > 0)
-                {
-                    commandLine.resize(len - 1);
-                    WideCharToMultiByte(CP_UTF8, 0, cmdLineVariant.bstrVal, -1, &commandLine[0],
-                                        len, nullptr, nullptr);
-                }
-            }
-
-            VariantClear(&cmdLineVariant);
-            pObj->Release();
+            break;
         }
 
-        pEnumerator->Release();
-    }
+        // 2) PEB 읽기 → ProcessParameters 포인터
+        PEB peb;
+        ZeroMemory(&peb, sizeof(peb));
+        if (!ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(peb), nullptr) ||
+            peb.ProcessParameters == nullptr)
+        {
+            break;
+        }
 
+        // 3) RTL_USER_PROCESS_PARAMETERS 읽기 → CommandLine(UNICODE_STRING)
+        RTL_USER_PROCESS_PARAMETERS params;
+        ZeroMemory(&params, sizeof(params));
+        if (!ReadProcessMemory(hProcess, peb.ProcessParameters, &params, sizeof(params), nullptr) ||
+            params.CommandLine.Buffer == nullptr ||
+            params.CommandLine.Length == 0)
+        {
+            break;
+        }
+
+        // 4) CommandLine 버퍼 읽기 (Length는 바이트 단위)
+        const USHORT byteLen = params.CommandLine.Length;
+        std::wstring wCommandLine(byteLen / sizeof(WCHAR), L'\0');
+        if (!ReadProcessMemory(hProcess, params.CommandLine.Buffer,
+                               wCommandLine.data(), byteLen, nullptr))
+        {
+            break;
+        }
+
+        // 5) UTF-8 변환
+        if (const int len = WideCharToMultiByte(CP_UTF8, 0, wCommandLine.c_str(),
+                                                static_cast<int>(wCommandLine.size()),
+                                                nullptr, 0, nullptr, nullptr); len > 0)
+        {
+            commandLine.resize(len);
+            WideCharToMultiByte(CP_UTF8, 0, wCommandLine.c_str(),
+                                static_cast<int>(wCommandLine.size()),
+                                commandLine.data(), len, nullptr, nullptr);
+        }
+    } while (false);
+
+    CloseHandle(hProcess);
     return commandLine;
 }
 
-void ProcessMonitor::CleanupWMI()
+std::string ProcessMonitor::GetProcessCommandLine(const DWORD pid)
 {
-    if (wmiInitialized)
+    const std::string fullCommandLine = GetCommandLineViaPeb(pid);
+
+    if (fullCommandLine.empty())
     {
-        if (pService)
-        {
-            pService->Release();
-            pService = nullptr;
-        }
-        if (pLocator)
-        {
-            pLocator->Release();
-            pLocator = nullptr;
-        }
-        CoUninitialize();
-        wmiInitialized = false;
-        std::cout << "[ProcessMonitor] WMI cleaned up" << std::endl;
+        WT_LOG("[ProcessMonitor] Could not get command line for PID " << pid);
+        return "";
     }
+
+    std::string projectPath = ExtractProjectPath(fullCommandLine);
+
+    if (projectPath.empty())
+    {
+        WT_LOG("[ProcessMonitor] No -projectPath found in command line: " << fullCommandLine);
+        return "";
+    }
+
+    if (!IsUnityProject(projectPath))
+    {
+        WT_LOG("[ProcessMonitor] Path is not a valid Unity project: " << projectPath);
+        return "";
+    }
+
+    return projectPath;
+}
+
+bool ProcessMonitor::ResolveUnityInstance(const DWORD pid, UnityInstance& instance)
+{
+    std::string projectPath = GetProcessCommandLine(pid);
+    if (projectPath.empty()) return false;
+
+    instance.processId = pid;
+    instance.projectName = GetProjectName(projectPath);
+    instance.editorVersion = GetUnityEditorVersion(projectPath);
+    instance.projectPath = std::move(projectPath);
+    return true;
 }
 
 std::vector<UnityInstance> ProcessMonitor::ScanUnityProcesses()
@@ -168,7 +150,7 @@ std::vector<UnityInstance> ProcessMonitor::ScanUnityProcesses()
     const HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE)
     {
-        std::cerr << "[ProcessMonitor] CreateToolhelp32Snapshot failed" << std::endl;
+        WT_ERR("[ProcessMonitor] CreateToolhelp32Snapshot failed");
         return foundInstances;
     }
 
@@ -181,15 +163,10 @@ std::vector<UnityInstance> ProcessMonitor::ScanUnityProcesses()
         {
             if (_wcsicmp(entry.szExeFile, L"Unity.exe") == 0 || _wcsicmp(entry.szExeFile, L"Unity") == 0)
             {
-                if (std::string projectPath = GetProcessCommandLine(entry.th32ProcessID); !projectPath.empty())
+                if (UnityInstance instance; ResolveUnityInstance(entry.th32ProcessID, instance))
                 {
-                    UnityInstance instance;
-                    instance.processId = entry.th32ProcessID;
-                    instance.projectPath = projectPath;
-                    instance.projectName = GetProjectName(projectPath);
-                    instance.editorVersion = GetUnityEditorVersion(projectPath);
-
-                    foundInstances.push_back(instance);
+                    activeInstances[instance.processId] = instance;
+                    foundInstances.push_back(std::move(instance));
                 }
             }
         } while (Process32NextW(hSnapshot, &entry));
@@ -197,35 +174,61 @@ std::vector<UnityInstance> ProcessMonitor::ScanUnityProcesses()
 
     CloseHandle(hSnapshot);
 
-    std::cout << "[ProcessMonitor] Scan complete. Found " << foundInstances.size() << " Unity instances" << std::endl;
+    WT_LOG("[ProcessMonitor] Scan complete. Found " << foundInstances.size() << " Unity instances");
     return foundInstances;
 }
 
-std::string ProcessMonitor::GetProcessCommandLine(const DWORD pid)
+void ProcessMonitor::PollChanges(std::vector<UnityInstance>& started, std::vector<UnityInstance>& closed)
 {
-    const std::string fullCommandLine = GetRealCommandLine(pid);
-
-    if (fullCommandLine.empty())
+    const HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE)
     {
-        std::cout << "[ProcessMonitor] Could not get command line for PID " << pid << std::endl;
-        return "";
+        WT_ERR("[ProcessMonitor] CreateToolhelp32Snapshot failed");
+        return;
     }
 
-    std::string projectPath = ExtractProjectPath(fullCommandLine);
+    // 1) 현재 살아 있는 Unity PID 집합 수집 (exe 이름만 비교 — 저비용)
+    std::unordered_set<DWORD> currentUnityPids;
 
-    if (projectPath.empty())
+    PROCESSENTRY32W entry;
+    entry.dwSize = sizeof(PROCESSENTRY32W);
+
+    if (Process32FirstW(hSnapshot, &entry))
     {
-        std::cout << "[ProcessMonitor] No -projectPath found in command line: " << fullCommandLine << std::endl;
-        return "";
+        do
+        {
+            if (_wcsicmp(entry.szExeFile, L"Unity.exe") == 0 || _wcsicmp(entry.szExeFile, L"Unity") == 0)
+            {
+                currentUnityPids.insert(entry.th32ProcessID);
+            }
+        } while (Process32NextW(hSnapshot, &entry));
     }
 
-    if (!IsUnityProject(projectPath))
+    CloseHandle(hSnapshot);
+
+    // 2) 새로 등장한 PID만 비싼 해석 수행
+    for (const DWORD pid : currentUnityPids)
     {
-        std::cout << "[ProcessMonitor] Path is not a valid Unity project: " << projectPath << std::endl;
-        return "";
+        if (activeInstances.find(pid) != activeInstances.end()) continue; // 이미 알려진 PID는 재조회 생략
+
+        if (UnityInstance instance; ResolveUnityInstance(pid, instance))
+        {
+            activeInstances[pid] = instance;
+            started.push_back(std::move(instance));
+        }
     }
 
-    return projectPath;
+    // 3) 더 이상 보이지 않는 PID는 종료된 것으로 판정 (동일 스냅샷으로 diff)
+    auto it = activeInstances.begin();
+    while (it != activeInstances.end())
+    {
+        if (currentUnityPids.find(it->first) == currentUnityPids.end())
+        {
+            closed.push_back(it->second);
+            it = activeInstances.erase(it);
+        }
+        else ++it;
+    }
 }
 
 std::string ProcessMonitor::ExtractProjectPath(const std::string &commandLine)
@@ -233,22 +236,13 @@ std::string ProcessMonitor::ExtractProjectPath(const std::string &commandLine)
     std::string lowerCommandLine = commandLine;
     std::transform(lowerCommandLine.begin(), lowerCommandLine.end(), lowerCommandLine.begin(), tolower);
 
-    size_t pos = lowerCommandLine.find("-projectpath");
+    constexpr char projectPathArg[] = "-projectpath";
+    size_t pos = lowerCommandLine.find(projectPathArg);
     if (pos == std::string::npos) return "";
 
-    // 원래 문자열에서 해당 위치 찾기
-    pos = commandLine.find("-projectpath", pos - (lowerCommandLine.length() - commandLine.length()));
-    if (pos == std::string::npos)
-    {
-        pos = commandLine.find("-projectpath", pos - (lowerCommandLine.length() - commandLine.length()));
-    }
-
-    // -projectPath 다음 공백이나 탭 찾기
-    pos = commandLine.find_first_of(" \t", pos);
-    if (pos == std::string::npos)
-    {
-        return "";
-    }
+    // lowerCommandLine and commandLine have identical lengths, so the index can
+    // be reused to parse the original-cased command line.
+    pos += sizeof(projectPathArg) - 1;
 
     // 공백/탭 건너뛰기
     pos = commandLine.find_first_not_of(" \t", pos);
@@ -341,40 +335,6 @@ std::string ProcessMonitor::ParseProjectVersionFile(const std::string &versionFi
     return "";
 }
 
-std::vector<UnityInstance> ProcessMonitor::GetNewInstances()
-{
-    const std::vector<UnityInstance> currentInstances = ScanUnityProcesses();
-    std::vector<UnityInstance> newInstances;
-
-    for (const auto &instance: currentInstances)
-    {
-        if (activeInstances.find(instance.processId) == activeInstances.end())
-        {
-            newInstances.push_back(instance);
-            activeInstances[instance.processId] = instance;
-        }
-    }
-
-    return newInstances;
-}
-
-std::vector<UnityInstance> ProcessMonitor::GetClosedInstances()
-{
-    std::vector<UnityInstance> closedInstances;
-
-    auto it = activeInstances.begin();
-    while (it != activeInstances.end())
-    {
-        if (!IsProcessRunning(it->first))
-        {
-            closedInstances.push_back(it->second);
-            it = activeInstances.erase(it);
-        } else ++it;
-    }
-
-    return closedInstances;
-}
-
 bool ProcessMonitor::IsUnityProject(const std::string &projectPath)
 {
     return fs::exists(projectPath + "\\Assets") && fs::exists(projectPath + "\\ProjectSettings");
@@ -382,7 +342,7 @@ bool ProcessMonitor::IsUnityProject(const std::string &projectPath)
 
 bool ProcessMonitor::IsProcessRunning(const DWORD pid)
 {
-    const HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    const HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (hProcess == nullptr) return false;
 
     DWORD exitCode;

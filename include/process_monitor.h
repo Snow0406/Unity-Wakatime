@@ -1,60 +1,38 @@
 ﻿#pragma once
 
 #include "globals.h"
-#include <Wbemidl.h>    // WMI 인터페이스
-#include <map>
-
-#pragma comment(lib, "wbemuuid.lib")
-#pragma comment(lib, "ole32.lib")
-#pragma comment(lib, "oleaut32.lib")
+#include <unordered_map>
 
 /**
  * Unity 프로세스들 감지
  */
 class ProcessMonitor {
 private:
-    std::map<DWORD, UnityInstance> activeInstances;
-    IWbemLocator* pLocator = nullptr;
-    IWbemServices* pService = nullptr;
-    bool wmiInitialized = false;
+    std::unordered_map<DWORD, UnityInstance> activeInstances;
 
     /**
-     * 문자열을 BSTR로 변환하는 헬퍼 함수
-     * @param str 변환할 문자열
-     * @return BSTR 포인터 (사용 후 SysFreeString으로 해제 필요)
-     */
-    BSTR StringToBSTR(const std::wstring& str);
-
-    /**
-     * BSTR을 문자열로 변환하는 헬퍼 함수
-     * @param bstr 변환할 BSTR
-     * @return 변환된 문자열
-     */
-    std::string BSTRToString(BSTR bstr);
-
-    /**
-     * WMI를 사용해서 실제 프로세스 커맨드 라인 가져오기
+     * NtQueryInformationProcess + PEB 읽기로 프로세스 커맨드 라인을 가져온다.
+     * WMI/RPC를 거치지 않아 Wmiprvse를 깨우지 않고 비용이 낮다.
+     * (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ 권한 필요, 64-bit 전제)
      * @param pid 대상 프로세스 ID
-     * @return 커맨드 라인
+     * @return 커맨드 라인, 실패시 빈 문자열
      */
-    std::string GetRealCommandLine(DWORD pid);
+    std::string GetCommandLineViaPeb(DWORD pid);
 
     /**
-     * WMI 초기화 (COM 초기화)
-     */
-    bool InitializeWMI();
-
-    /**
-     * WMI 정리
-     */
-    void CleanupWMI();
-
-    /**
-     * 특정 프로세스의 커맨드 라인을 가져오기
+     * 특정 프로세스의 커맨드 라인을 가져와 Unity 프로젝트 경로로 해석
      * @param pid 대상 프로세스 ID
-     * @return 커맨드 라인, 실패시 빈문자열
+     * @return 프로젝트 경로, 실패시 빈문자열
      */
     std::string GetProcessCommandLine(DWORD pid);
+
+    /**
+     * 스냅샷 엔트리가 Unity 프로세스이면 인스턴스 정보로 해석
+     * @param pid 대상 프로세스 ID
+     * @param instance 해석된 인스턴스 (출력)
+     * @return Unity 프로젝트로 해석되면 true
+     */
+    bool ResolveUnityInstance(DWORD pid, UnityInstance& instance);
 
     /**
      * 커맨드 라인에서 Unity 프로젝트 경로 추출
@@ -96,22 +74,19 @@ public:
     ~ProcessMonitor();
 
     /**
-     * 현재 실행 중인 모든 Unity 인스턴스를 스캔
+     * 현재 실행 중인 모든 Unity 인스턴스를 스캔 (초기 스캔용).
+     * 결과를 activeInstances에도 등록하여 이후 PollChanges가 중복 보고하지 않도록 한다.
      * @return 발견된 Unity 인스턴스들
      */
     std::vector<UnityInstance> ScanUnityProcesses();
 
     /**
-     * 새로 시작된 Unity 프로세스가 있는지 확인
-     * @return 새로운 인스턴스들
+     * 단일 스냅샷으로 새로 시작/종료된 Unity 프로세스를 한 번에 diff한다.
+     * 이미 알려진 PID는 재해석(PEB/디스크 조회)하지 않는다.
+     * @param started 새로 감지된 인스턴스 (출력)
+     * @param closed 종료된 인스턴스 (출력)
      */
-    std::vector<UnityInstance> GetNewInstances();
-
-    /**
-     * 종료된 Unity 프로세스가 있는지 확인
-     * @return 종료된 인스턴스들
-     */
-    std::vector<UnityInstance> GetClosedInstances();
+    void PollChanges(std::vector<UnityInstance>& started, std::vector<UnityInstance>& closed);
 
     /**
      * 특정 프로세스 ID가 실행 중인지 확인
@@ -119,10 +94,4 @@ public:
      * @return 실행중이면 true
      */
     bool IsProcessRunning(DWORD processId);
-
-    /**
-     * 현재 활성화된 모든 Unity 인스턴스 반환
-     * @return 현재 실행중인 인스턴스들
-     */
-    const std::map<DWORD, UnityInstance>& GetActiveInstances() const;
 };

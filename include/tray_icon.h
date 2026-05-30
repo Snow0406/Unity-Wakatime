@@ -8,12 +8,19 @@
 
 // 트레이 아이콘 관련 상수들
 #define WM_TRAYICON (WM_USER + 1)    // 트레이 아이콘 메시지
+#define WM_APP_FILE_EVENT (WM_APP + 1) // 파일 변경 큐 적재 통지 (워커 스레드 → 메인 스레드)
 #define IDM_EXIT 100                 // 종료 메뉴 ID
 #define IDM_SHOW_STATUS 101          // 상태 보기 메뉴 ID
 #define IDM_TOGGLE_MONITORING 102    // 모니터링 토글 메뉴 ID
 #define IDM_OPEN_DASHBOARD 103       // WakaTime 대시보드 열기
 #define IDM_SETTINGS 104             // 설정 메뉴 ID
 #define IDM_GITHUB 105               // Github 링크
+
+// 타이머 ID 및 주기 (메시지 펌프 기반 이벤트화)
+#define TIMER_PROCESS_SCAN 1                 // Unity 프로세스 생성/종료 스캔
+#define TIMER_PERIODIC_HEARTBEAT 2           // 포커스 유지 시 주기 heartbeat
+#define PROCESS_SCAN_INTERVAL_MS 10000       // 10초
+#define PERIODIC_HEARTBEAT_INTERVAL_MS 120000 // 2분
 
 /**
  * Windows 시스템 트레이에 아이콘을 표시하고 사용자 인터랙션 처리
@@ -39,6 +46,11 @@ private:
     std::function<void()> onOpenDashboard;                      // 대시보드 열기 콜백
     std::function<void()> onShowSettings;                       // 설정 보기 콜백
     std::function<void(const std::string&)> onApiKeyChange;     // API 키 변경 콜백
+
+    // 이벤트 허브 콜백 (메시지 펌프에서 디스패치)
+    std::function<void()> onFileEvent;       // WM_APP_FILE_EVENT → 파일 이벤트 드레인
+    std::function<void()> onProcessScan;     // TIMER_PROCESS_SCAN → 프로세스 생성/종료 스캔
+    std::function<void()> onPeriodicTick;    // TIMER_PERIODIC_HEARTBEAT → 주기 heartbeat 체크
     
     /**
      * 숨겨진 창 생성 (트레이 아이콘 메시지 수신용)
@@ -170,10 +182,17 @@ public:
     void Shutdown();
 
     /**
-     * 메시지 처리 (메인 스레드에서 호출)
-     * @return 처리된 메시지 수
+     * 메시지 펌프 실행 (메인 스레드에서 호출, WM_QUIT까지 블록).
+     * 진입 시 프로세스 스캔/주기 heartbeat 타이머를 설치하고 종료 시 정리한다.
+     * @return WM_QUIT의 exit code
      */
-    int ProcessMessages();
+    int RunMessageLoop();
+
+    /**
+     * 파일 변경 큐 적재를 메인 스레드에 통지 (워커 스레드에서 호출 가능).
+     * 메시지를 post하여 메시지 펌프가 WM_APP_FILE_EVENT로 깨어나도록 한다.
+     */
+    void NotifyFileEvent();
 
     /**
      * 상태 정보 업데이트 (서브메뉴에 반영)
@@ -222,6 +241,21 @@ public:
      * @param callback API Key 변경 시 호출될 함수
      */
     void SetApiKeyChangeCallback(const std::function<void(const std::string&)> &callback);
+
+    /**
+     * 파일 변경 이벤트 처리 콜백 설정 (WM_APP_FILE_EVENT)
+     */
+    void SetFileEventCallback(const std::function<void()> &callback);
+
+    /**
+     * 프로세스 스캔 콜백 설정 (TIMER_PROCESS_SCAN)
+     */
+    void SetProcessScanCallback(const std::function<void()> &callback);
+
+    /**
+     * 주기 heartbeat 틱 콜백 설정 (TIMER_PERIODIC_HEARTBEAT)
+     */
+    void SetPeriodicTickCallback(const std::function<void()> &callback);
 
 private:
     /**

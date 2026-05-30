@@ -50,7 +50,6 @@ if(WIN32)
                 winhttp
                 shell32
                 psapi
-                wbemuuid
                 ole32
                 oleaut32
                 windowscodecs
@@ -63,7 +62,6 @@ if(WIN32)
                 winhttp
                 shell32
                 psapi
-                wbemuuid
                 ole32
                 oleaut32
                 windowscodecs
@@ -82,9 +80,18 @@ if(WIN32)
                     /ENTRY:mainCRTStartup
             )
         elseif(MINGW)
-            # MinGW: 심볼 스트리핑 (크기 최적화)
+            # MinGW: 크기 최적화 (-Os), LTO, 미사용 섹션 제거 (Resident Set Size 최소화)
+            target_compile_options(unity_wakatime PRIVATE
+                    -Os
+                    -flto
+                    -ffunction-sections
+                    -fdata-sections
+            )
             target_link_options(unity_wakatime PRIVATE
-                    -s  # Strip symbols for smaller file size
+                    -Os  # LTO 링크 단계 최적화도 크기 우선으로
+                    -s   # Strip symbols for smaller file size
+                    -flto
+                    -Wl,--gc-sections
             )
         endif()
     endif()

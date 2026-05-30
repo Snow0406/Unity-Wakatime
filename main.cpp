@@ -29,7 +29,7 @@ namespace Globals
 // 파일 변경 이벤트 처리 - TrayIcon도 업데이트
 void OnFileChanged(const FileChangeEvent &event)
 {
-    std::cout << "[HEARTBEAT] " << event.fileName << " (" << event.projectName << ")" << std::endl;
+    WT_LOG("[HEARTBEAT] " << event.fileName << " (" << event.projectName << ")");
 
     // WakaTime API에 heartbeat 전송
     if (g_wakatimeClient)
@@ -37,11 +37,11 @@ void OnFileChanged(const FileChangeEvent &event)
         if (g_wakatimeClient->IsInitialized())
         {
             g_wakatimeClient->SendHeartbeatFromEvent(event);
-            std::cout << "[HEARTBEAT] ✅ Sent to WakaTime API" << std::endl;
+            WT_LOG("[HEARTBEAT] ✅ Sent to WakaTime API");
         }
         else
         {
-            std::cout << "[HEARTBEAT] ⚠️ Skipped - WakaTime client not initialized" << std::endl;
+            WT_LOG("[HEARTBEAT] ⚠️ Skipped - WakaTime client not initialized");
         }
     }
 
@@ -56,8 +56,11 @@ void OnFileChanged(const FileChangeEvent &event)
 // 트레이 아이콘 콜백 함수들
 void OnTrayExit()
 {
-    std::cout << "[Main] Exit requested from tray" << std::endl;
+    WT_LOG("[Main] Exit requested from tray");
     Globals::RequestExit();
+    // 메시지 펌프(GetMessage)를 깨워 정상 종료시킨다. 트레이 메뉴 핸들러는
+    // 메인 스레드(WndProc)에서 동기 호출되므로 여기서 PostQuitMessage가 안전하다.
+    PostQuitMessage(0);
 }
 
 void OnTrayShowStatus()
@@ -71,7 +74,7 @@ void OnTrayShowStatus()
 
 void OnTrayToggleMonitoring(const bool enabled)
 {
-    std::cout << "[Main] Monitoring " << (enabled ? "enabled" : "disabled") << std::endl;
+    WT_LOG("[Main] Monitoring " << (enabled ? "enabled" : "disabled"));
 
     if (g_trayIcon)
     {
@@ -84,7 +87,7 @@ void OnTrayToggleMonitoring(const bool enabled)
 
 void OnTrayOpenDashboard()
 {
-    std::cout << "[Main] Opening WakaTime dashboard" << std::endl;
+    WT_LOG("[Main] Opening WakaTime dashboard");
 
     ShellExecuteW(nullptr, L"open", L"https://wakatime.com/dashboard",
                   nullptr, nullptr, SW_SHOWNORMAL);
@@ -92,7 +95,7 @@ void OnTrayOpenDashboard()
 
 void OnTrayShowSettings()
 {
-    std::cout << "[Main] Settings requested" << std::endl;
+    WT_LOG("[Main] Settings requested");
 
     if (g_trayIcon && g_wakatimeClient)
     {
@@ -106,7 +109,7 @@ void OnTrayShowSettings()
 
 void OnApiKeyChanged(const std::string &newApiKey)
 {
-    std::cout << "[Main] API Key changed, updating WakaTime client..." << std::endl;
+    WT_LOG("[Main] API Key changed, updating WakaTime client...");
 
     if (g_wakatimeClient)
     {
@@ -118,12 +121,12 @@ void OnApiKeyChanged(const std::string &newApiKey)
             {
                 g_trayIcon->ShowInfoNotification("✅ API Key saved and client reinitialized!");
                 g_trayIcon->RefreshStatusMenu();
-                std::cout << "[Main] ✅ WakaTime client successfully reinitialized" << std::endl;
+                WT_LOG("[Main] ✅ WakaTime client successfully reinitialized");
             }
             else
             {
                 g_trayIcon->ShowErrorNotification("❌ Failed to initialize with new API key");
-                std::cerr << "[Main] ❌ WakaTime client reinitialization failed" << std::endl;
+                WT_ERR("[Main] ❌ WakaTime client reinitialization failed");
             }
         }
     }
@@ -156,12 +159,12 @@ void HandleNewUnityInstances(const std::vector<UnityInstance> &newInstances)
 {
     for (const auto &instance: newInstances)
     {
-        std::cout << "[Main] New Unity instance detected: " << instance.projectName
-                << " (Unity " << instance.editorVersion << ")" << std::endl;
+        WT_LOG("[Main] New Unity instance detected: " << instance.projectName
+                << " (Unity " << instance.editorVersion << ")");
 
         if (g_fileWatcher && g_fileWatcher->StartWatching(instance.projectPath, instance.projectName, instance.editorVersion))
         {
-            std::cout << "[Main] Started watching: " << instance.projectName << std::endl;
+            WT_LOG("[Main] Started watching: " << instance.projectName);
 
             if (g_trayIcon)
             {
@@ -172,7 +175,7 @@ void HandleNewUnityInstances(const std::vector<UnityInstance> &newInstances)
         }
         else
         {
-            std::cout << "[Main] Failed to start watching: " << instance.projectName << std::endl;
+            WT_LOG("[Main] Failed to start watching: " << instance.projectName);
         }
     }
 }
@@ -181,7 +184,7 @@ void HandleClosedUnityInstances(const std::vector<UnityInstance> &closedInstance
 {
     for (const auto &instance: closedInstances)
     {
-        std::cout << "[Main] Unity instance closed: " << instance.projectName << std::endl;
+        WT_LOG("[Main] Unity instance closed: " << instance.projectName);
 
         if (g_fileWatcher)
         {
@@ -199,11 +202,11 @@ void HandleClosedUnityInstances(const std::vector<UnityInstance> &closedInstance
                 {
                     const auto& projectName = remainingProjects[0].projectName;
                     g_trayIcon->SetCurrentProject(projectName);
-                    std::cout << "[Main] Switched to remaining project: " << projectName << std::endl;
+                    WT_LOG("[Main] Switched to remaining project: " << projectName);
                 } else
                 {
                     g_trayIcon->SetCurrentProject(""); // 모든 프로젝트 종료
-                    std::cout << "[Main] No Unity projects are being watched" << std::endl;
+                    WT_LOG("[Main] No Unity projects are being watched");
                 }
             }
         }
@@ -214,13 +217,13 @@ void InitialUnityProjectScan()
 {
     if (!g_processMonitor || !g_fileWatcher) return;
 
-    std::cout << "[Main] Performing initial Unity project scan..." << std::endl;
+    WT_LOG("[Main] Performing initial Unity project scan...");
 
     const auto& instances = g_processMonitor->ScanUnityProcesses();
 
     if (instances.empty())
     {
-        std::cout << "[Main] No Unity processes found during initial scan" << std::endl;
+        WT_LOG("[Main] No Unity processes found during initial scan");
         return;
     }
 
@@ -228,8 +231,8 @@ void InitialUnityProjectScan()
     {
         if (g_fileWatcher->StartWatching(instance.projectPath, instance.projectName, instance.editorVersion))
         {
-            std::cout << "[Main] ✅ Started watching: " << instance.projectName
-                    << " (Unity " << instance.editorVersion << ")" << std::endl;
+            WT_LOG("[Main] ✅ Started watching: " << instance.projectName
+                    << " (Unity " << instance.editorVersion << ")");
 
             if (g_trayIcon)
             {
@@ -238,22 +241,31 @@ void InitialUnityProjectScan()
         }
     }
 
-    std::cout << "[Main] Initial scan complete. Watching " << instances.size() << " Unity projects" << std::endl;
+    WT_LOG("[Main] Initial scan complete. Watching " << instances.size() << " Unity projects");
+}
+
+// 포그라운드 창 변경 이벤트 콜백 (SetWinEventHook).
+// WINEVENT_OUTOFCONTEXT라 메인 스레드의 메시지 펌프 중 디스패치되므로 마샬링 불필요.
+void CALLBACK FocusWinEventProc(HWINEVENTHOOK, const DWORD event, const HWND hwnd,
+                                const LONG idObject, LONG, DWORD, DWORD)
+{
+    if (event != EVENT_SYSTEM_FOREGROUND || idObject != OBJID_WINDOW) return;
+    if (g_unityFocusDetector) g_unityFocusDetector->OnForegroundChanged(hwnd);
 }
 
 int main()
 {
-    std::cout << "[Main] Unity WakaTime Monitor Starting..." << std::endl;
+    WT_LOG("[Main] Unity WakaTime Monitor Starting...");
     const bool darkModeAvailable = WindowsDarkMode::EnableForApp();
-    std::cout << "[Main] Dark mode menu opt-in: "
-              << (darkModeAvailable ? "enabled" : "not available") << std::endl;
+    WT_LOG("[Main] Dark mode menu opt-in: "
+              << (darkModeAvailable ? "enabled" : "not available"));
 
     TrayIcon trayIcon;
     g_trayIcon = &trayIcon;
 
     if (!trayIcon.Initialize("Unity WakaTime"))
     {
-        std::cerr << "[Main] Failed to initialize tray icon!" << std::endl;
+        WT_ERR("[Main] Failed to initialize tray icon!");
         return 1;
     }
 
@@ -272,7 +284,7 @@ int main()
 
     if (!wakatimeClient.Initialize())
     {
-        std::cerr << "[Main] Failed to initialize WakaTime client!" << std::endl;
+        WT_ERR("[Main] Failed to initialize WakaTime client!");
         trayIcon.ShowErrorNotification("WakaTime client not initialized. Click 'Setup API Key' in menu.");
     }
 
@@ -282,6 +294,11 @@ int main()
     g_fileWatcher = &fileWatcher;
 
     fileWatcher.SetChangeCallback(OnFileChanged);
+    // 워커 스레드의 파일 변경 → 메인 스레드로 PostMessage 마샬링 (InitialScan 이전에 설치)
+    fileWatcher.SetNotifyCallback([&trayIcon]()
+    {
+        trayIcon.NotifyFileEvent();
+    });
 
     UnityFocusDetector unityFocusDetector;
     g_unityFocusDetector = &unityFocusDetector;
@@ -294,47 +311,44 @@ int main()
 
     trayIcon.SetMonitoringState(true);
 
-    std::cout << "\n[Main] Unity WakaTime is now running in background!" << std::endl;
+    WT_LOG("\n[Main] Unity WakaTime is now running in background!");
 
-    auto lastScan = std::chrono::steady_clock::now();
-    const auto scanInterval = std::chrono::seconds(10);
-
-    while (!Globals::ShouldExit())
+    // 이벤트 허브 콜백 배선 (TrayIcon의 메시지 펌프에서 디스패치)
+    trayIcon.SetFileEventCallback([]()
     {
-        if (g_fileWatcher)
-        {
-            g_fileWatcher->DrainPendingEvents();
-        }
+        if (g_fileWatcher) g_fileWatcher->DrainPendingEvents();
+    });
 
-        if (g_unityFocusDetector) {
-            g_unityFocusDetector->CheckFocused();
-            g_unityFocusDetector->SendPeriodicHeartbeat();
-        }
+    trayIcon.SetProcessScanCallback([&processMonitor]()
+    {
+        std::vector<UnityInstance> started;
+        std::vector<UnityInstance> closed;
+        processMonitor.PollChanges(started, closed);
+        if (!started.empty()) HandleNewUnityInstances(started);
+        if (!closed.empty()) HandleClosedUnityInstances(closed);
+    });
 
-        int msgCount = trayIcon.ProcessMessages();
-        if (msgCount > 5)  std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 많은 메시지 → 빠른 처리
-        else if (msgCount > 0) std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 일부 메시지 → 보통 처리
-        else std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // 메시지 없음 → 여유 있게
+    trayIcon.SetPeriodicTickCallback([]()
+    {
+        if (g_unityFocusDetector) g_unityFocusDetector->SendPeriodicHeartbeat();
+    });
 
-        if (auto now = std::chrono::steady_clock::now(); now - lastScan >= scanInterval)
-        {
-            // 새로운 Unity 인스턴스 감지
-            if (auto newInstances = processMonitor.GetNewInstances(); !newInstances.empty())
-            {
-                HandleNewUnityInstances(newInstances);
-            }
+    // 포커스 추적: SetWinEventHook(OUTOFCONTEXT) → 콜백이 메인 펌프에서 디스패치됨 (매초 폴링 제거)
+    const HWINEVENTHOOK focusHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+        nullptr, FocusWinEventProc, 0, 0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
-            // 종료된 Unity 인스턴스 감지
-            if (auto closedInstances = processMonitor.GetClosedInstances(); !closedInstances.empty())
-            {
-                HandleClosedUnityInstances(closedInstances);
-            }
+    // 훅 설치 시점에 이미 Unity가 포그라운드일 수 있으므로 초기 상태 1회 캡처
+    unityFocusDetector.OnForegroundChanged(GetForegroundWindow());
 
-            lastScan = now;
-        }
-    }
+    // 메시지 펌프: idle 시 GetMessage가 커널에서 블록되어 CPU ≈ 0,
+    // 파일/포커스/타이머/트레이 이벤트에만 깨어난다. WM_QUIT까지 블록.
+    trayIcon.RunMessageLoop();
 
-    std::cout << "\n[Main] Shutting down Unity WakaTime..." << std::endl;
+    if (focusHook) UnhookWinEvent(focusHook);
+
+    WT_LOG("\n[Main] Shutting down Unity WakaTime...");
     trayIcon.ShowInfoNotification("Unity WakaTime shutting down...");
 
     // 남은 heartbeat 전송
@@ -345,19 +359,19 @@ int main()
             g_fileWatcher->DrainPendingEvents(2048);
         }
 
-        std::cout << "[Main] Flushing remaining heartbeats..." << std::endl;
+        WT_LOG("[Main] Flushing remaining heartbeats...");
         wakatimeClient.FlushQueue();
     }
 
     // 모든 파일 감시 중지
     if (g_fileWatcher)
     {
-        std::cout << "[Main] Stopping all file watchers..." << std::endl;
+        WT_LOG("[Main] Stopping all file watchers...");
         g_fileWatcher->StopAllWatching();
     }
 
     Globals::Cleanup();
 
-    std::cout << "[Main] Unity WakaTime stopped gracefully." << std::endl;
+    WT_LOG("[Main] Unity WakaTime stopped gracefully.");
     return 0;
 }

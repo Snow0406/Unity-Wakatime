@@ -55,9 +55,12 @@ private:
     mutable std::mutex projectsMutex;  // 스레드 안전성을 위한 뮤텍스
     std::deque<FileChangeEvent> pendingEvents;
     mutable std::mutex pendingEventsMutex;
-    
+    std::atomic<bool> notifyScheduled{false};  // PostMessage 코얼레싱 (큐 적재 통지 1회로 합침)
+
     // 파일 변경 이벤트 콜백 함수
     std::function<void(const FileChangeEvent&)> changeCallback;
+    // 큐에 이벤트가 적재되었음을 메인 스레드에 통지 (PostMessage 등)
+    std::function<void()> notifyCallback;
 
     /**
      * 특정 프로젝트 폴더를 감시하는 워커 스레드 함수
@@ -96,6 +99,13 @@ public:
      * @param callback 파일이 변경될 때 호출될 함수
      */
     void SetChangeCallback(std::function<void(const FileChangeEvent&)> callback);
+
+    /**
+     * 큐 적재 통지 콜백 설정 (워커 스레드 → 메인 스레드 마샬링용).
+     * 워커 스레드가 이벤트를 큐에 넣으면 이 콜백을 호출한다(코얼레싱됨).
+     * @param callback 통지 시 호출될 함수 (예: PostMessage)
+     */
+    void SetNotifyCallback(std::function<void()> callback);
     
     /**
      * Unity 프로젝트 감시 시작
