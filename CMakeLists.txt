@@ -82,17 +82,16 @@ if(WIN32)
                     /ENTRY:mainCRTStartup
             )
         elseif(MINGW)
-            # MinGW: 크기 최적화 (-Os), LTO, 미사용 섹션 제거 (Resident Set Size 최소화)
+            # MinGW: 크기 최적화 (-Os), 미사용 섹션 제거 (Resident Set Size 최소화)
+            # GCC 16.1.0(MSYS2 MinGW)에서 LTO(-flto) 링크 중 내부 컴파일러 오류가 발생하므로 비활성화한다.
             target_compile_options(creative_wakatime PRIVATE
                     -Os
-                    -flto
                     -ffunction-sections
                     -fdata-sections
             )
             target_link_options(creative_wakatime PRIVATE
-                    -Os  # LTO 링크 단계 최적화도 크기 우선으로
+                    -Os  # 링크 단계도 크기 우선으로 최적화
                     -s   # Strip symbols for smaller file size
-                    -flto
                     -Wl,--gc-sections
             )
         endif()
