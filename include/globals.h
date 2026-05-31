@@ -25,6 +25,8 @@
 #include <sstream>
 #include <fstream>
 #include <algorithm>
+#include <cstdlib>
+#include <system_error>
 
 namespace fs = std::filesystem;
 
@@ -98,7 +100,8 @@ namespace Config
 
     // WakaTime 설정
     const std::string WAKATIME_API_URL = "https://api.wakatime.com/api/v1/users/current/heartbeats";
-    const std::string USER_AGENT = "unity-wakatime/1.0";
+    const std::string APP_NAME = "creative-wakatime";
+    const std::string APP_VERSION = "2.0";
     const int HEARTBEAT_TIMEOUT_MS = 5000;
     const int FILE_WATCHER_BUFFER_SIZE = 4096;
     const int HEARTBEAT_DEBOUNCE_MS = 2000;
@@ -117,6 +120,70 @@ namespace Config
     {
         static const auto folders = std::unordered_set<std::string>(IGNORE_FOLDERS.begin(), IGNORE_FOLDERS.end());
         return folders;
+    }
+
+    /**
+     * 앱 데이터 디렉토리 경로 반환 (%APPDATA%/creative-wakatime/).
+     * 폴더가 없으면 events/ 하위까지 생성한다. 실패 시 빈 문자열.
+     * @return 앱 데이터 디렉토리 경로 (끝에 구분자 없음), 실패 시 ""
+     */
+    inline std::string GetAppDataDir()
+    {
+        const char *appData = std::getenv("APPDATA");
+        if (appData == nullptr || appData[0] == '\0')
+        {
+            return "";
+        }
+
+        const std::string dir = std::string(appData) + "\\" + APP_NAME;
+
+        std::error_code ec;
+        fs::create_directories(dir, ec); // 이미 존재해도 에러 아님
+        if (ec)
+        {
+            return "";
+        }
+
+        return dir;
+    }
+
+    /**
+     * 이벤트 inbox 디렉토리 경로 반환 (%APPDATA%/creative-wakatime/events/).
+     * 폴더가 없으면 생성한다. 실패 시 빈 문자열.
+     */
+    inline std::string GetEventsDir()
+    {
+        const std::string base = GetAppDataDir();
+        if (base.empty())
+        {
+            return "";
+        }
+
+        const std::string dir = base + "\\events";
+
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (ec)
+        {
+            return "";
+        }
+
+        return dir;
+    }
+
+    /**
+     * API 키 config 파일 경로 반환 (%APPDATA%/creative-wakatime/wakatime_config.txt).
+     * 앱 데이터 디렉토리를 얻지 못하면 빈 문자열.
+     */
+    inline std::string GetConfigFilePath()
+    {
+        const std::string base = GetAppDataDir();
+        if (base.empty())
+        {
+            return "";
+        }
+
+        return base + "\\wakatime_config.txt";
     }
 }
 

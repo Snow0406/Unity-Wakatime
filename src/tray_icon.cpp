@@ -66,7 +66,7 @@ bool TrayIcon::CreateHiddenWindow()
     // 창 클래스 등록
     wc.lpfnWndProc = WindowProc; // 윈도우 프로시저
     wc.hInstance = GetModuleHandle(nullptr); // 현재 모듈 핸들
-    wc.lpszClassName = L"UnityWakaTimeTray"; // 클래스 이름
+    wc.lpszClassName = L"CreativeWakaTimeTray"; // 클래스 이름
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH) (COLOR_WINDOW + 1);
 
@@ -84,8 +84,8 @@ bool TrayIcon::CreateHiddenWindow()
     // WS_OVERLAPPED: 기본 창 스타일
     // CW_USEDEFAULT: 기본 위치/크기
     hwnd = CreateWindowW(
-        L"UnityWakaTimeTray",           // 클래스 이름
-        L"Unity WakaTime",              // 창 제목
+        L"CreativeWakaTimeTray",        // 클래스 이름
+        L"Creative WakaTime",           // 창 제목
         WS_OVERLAPPED,                  // 창 스타일
         CW_USEDEFAULT, CW_USEDEFAULT,   // 위치
         1, 1,                           // 크기 (최소)
@@ -117,7 +117,7 @@ bool TrayIcon::CreateTrayIcon() {
 
     nid.hIcon = LoadPngIcon("logo_32.png");
 
-    wcscpy_s(nid.szTip, L"Unity WakaTime - Starting...");
+    wcscpy_s(nid.szTip, L"Creative WakaTime - Starting...");
 
     if (!Shell_NotifyIconW(NIM_ADD, &nid)) {
         DWORD error = GetLastError();
@@ -340,14 +340,14 @@ HMENU TrayIcon::CreateStatusSubMenu()
     const std::wstring monitoringStatus = isMonitoring ? L"Monitoring: Active" : L"Monitoring: Paused";
     AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, monitoringStatus.c_str());
 
-    // Current project
-    if (!currentProject.empty())
+    // Active context
+    if (!activeContext.empty())
     {
-        const std::wstring projectInfo = L"Current Project: " + std::wstring(currentProject.begin(), currentProject.end());
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, projectInfo.c_str());
+        const std::wstring contextInfo = L"Active: " + std::wstring(activeContext.begin(), activeContext.end());
+        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, contextInfo.c_str());
     } else
     {
-        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, L"No Unity project detected");
+        AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, L"No active creative tool detected");
     }
 
     // Heartbeat summary
@@ -390,7 +390,7 @@ void TrayIcon::UpdateContextMenu()
 }
 
 void TrayIcon::OpenGitHubRepository() {
-    const auto githubUrl = "https://github.com/Snow0406/Unity-Wakatime";
+    const auto githubUrl = "https://github.com/Snow0406/creative-wakatime";
 
     const std::wstring wGithubUrl(githubUrl, githubUrl + strlen(githubUrl));
     WT_LOG("[TrayIcon] Opening GitHub repository: " << githubUrl);
@@ -700,30 +700,35 @@ void TrayIcon::ShowBalloonNotification(const std::string &title,
     nid.uFlags &= ~NIF_INFO;
 }
 
-void TrayIcon::SetCurrentProject(const std::string &projectName)
+void TrayIcon::SetActiveContext(const std::string &contextName)
 {
-    const bool projectChanged = (currentProject != projectName);
-    currentProject = projectName;
+    const bool contextChanged = (activeContext != contextName);
+    activeContext = contextName;
 
     std::ostringstream tooltip;
-    tooltip << "Unity WakaTime";
-    if (!projectName.empty())
+    tooltip << "Creative WakaTime";
+    if (!contextName.empty())
     {
-        tooltip << " - " << projectName;
+        tooltip << " - " << contextName;
     }
     tooltip << " (" << totalHeartbeats << " heartbeats)";
 
     UpdateTooltip(tooltip.str());
-    if (projectChanged)
+    if (contextChanged)
     {
         RefreshStatusMenu();
     }
 }
 
+void TrayIcon::SetCurrentProject(const std::string &projectName)
+{
+    SetActiveContext(projectName);
+}
+
 void TrayIcon::IncrementHeartbeats()
 {
     totalHeartbeats++;
-    SetCurrentProject(currentProject);
+    SetActiveContext(activeContext);
 }
 
 void TrayIcon::SetMonitoringState(const bool monitoring)
@@ -731,10 +736,10 @@ void TrayIcon::SetMonitoringState(const bool monitoring)
     isMonitoring = monitoring;
 
     std::ostringstream tooltip;
-    tooltip << "Unity WakaTime - " << (monitoring ? "Active" : "Paused");
-    if (!currentProject.empty())
+    tooltip << "Creative WakaTime - " << (monitoring ? "Active" : "Paused");
+    if (!activeContext.empty())
     {
-        tooltip << " - " << currentProject;
+        tooltip << " - " << activeContext;
     }
 
     UpdateTooltip(tooltip.str());
@@ -775,12 +780,12 @@ void TrayIcon::Shutdown()
 
 void TrayIcon::ShowErrorNotification(const std::string &message)
 {
-    ShowBalloonNotification("Unity WakaTime Error", message, 5000, NIIF_ERROR);
+    ShowBalloonNotification("Creative WakaTime Error", message, 5000, NIIF_ERROR);
 }
 
 void TrayIcon::ShowInfoNotification(const std::string &message)
 {
-    ShowBalloonNotification("Unity WakaTime", message, 2000, NIIF_INFO);
+    ShowBalloonNotification("Creative WakaTime", message, 2000, NIIF_INFO);
 }
 
 #pragma endregion Notification

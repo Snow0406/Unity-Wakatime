@@ -1,4 +1,4 @@
-name: Build Unity WakaTime
+name: Build Creative WakaTime
 
 on:
   pull_request:
@@ -72,8 +72,8 @@ jobs:
       shell: msys2 {0}
       run: |
         echo "✅ Ninja build test completed!"
-        if [ -f "build/unity_wakatime.exe" ]; then
-          echo "📦 Executable created: $(stat -c%s build/unity_wakatime.exe) bytes"
+        if [ -f "build/creative_wakatime.exe" ]; then
+          echo "📦 Executable created: $(stat -c%s build/creative_wakatime.exe) bytes"
           echo "🥷 Ninja build test passed - ready for production!"
         else
           echo "❌ Ninja build test failed!"
@@ -135,15 +135,15 @@ jobs:
     - name: Build Production Release (Ninja)
       shell: msys2 {0}
       run: |
-        echo "🥷 Building Unity WakaTime with Ninja v${{ env.RELEASE_VERSION }}..."
+        echo "🥷 Building Creative WakaTime with Ninja v${{ env.RELEASE_VERSION }}..."
         cmake --build build --config $BUILD_TYPE --parallel $(nproc)
 
     - name: Verify Production Build
       shell: msys2 {0}
       run: |
-        if [ -f "build/unity_wakatime.exe" ]; then
+        if [ -f "build/creative_wakatime.exe" ]; then
           echo "✅ Ninja production build successful!"
-          echo "📦 Final executable size: $(stat -c%s build/unity_wakatime.exe) bytes"
+          echo "📦 Final executable size: $(stat -c%s build/creative_wakatime.exe) bytes"
         else
           echo "❌ Ninja production build failed!"
           exit 1
@@ -151,20 +151,33 @@ jobs:
     - name: Create Release Package
       shell: msys2 {0}
       run: |
-        PACKAGE_NAME="Unity-Wakatime_v${{ env.RELEASE_VERSION }}"
+        PACKAGE_NAME="Creative-Wakatime_v${{ env.RELEASE_VERSION }}"
+        EXTENSION_NAME="creative-wakatime"
         echo "📦 Creating release package: $PACKAGE_NAME"
 
         mkdir -p "release-package/$PACKAGE_NAME"
-        cp build/unity_wakatime.exe "release-package/$PACKAGE_NAME/"
+        cp build/creative_wakatime.exe "release-package/$PACKAGE_NAME/"
         cp build/logo_32.png "release-package/$PACKAGE_NAME/"
 
         [ -f README.md ] && cp README.md "release-package/$PACKAGE_NAME/" || echo "README.md not found"
         [ -f LICENSE ] && cp LICENSE "release-package/$PACKAGE_NAME/" || echo "LICENSE not found"
 
+        # Aseprite extension은 별도 설치 가능한 .aseprite-extension(zip)으로 패키징
+        if [ -d aseprite-extension ]; then
+          mkdir -p release-package/aseprite-extension-build
+          cp aseprite-extension/package.json release-package/aseprite-extension-build/
+          cp aseprite-extension/wakatime.lua release-package/aseprite-extension-build/
+          (cd release-package/aseprite-extension-build && 7z a "../${EXTENSION_NAME}.aseprite-extension" package.json wakatime.lua)
+        else
+          echo "aseprite-extension not found"
+        fi
+
         echo "📋 Release package contents:"
         ls -la "release-package/$PACKAGE_NAME/"
+        ls -lh release-package/*.aseprite-extension || true
 
         echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+        echo "EXTENSION_NAME=$EXTENSION_NAME" >> $GITHUB_ENV
 
     - name: Create ZIP Archive
       shell: msys2 {0}
@@ -180,7 +193,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PACKAGE_NAME }}
-        path: release-package/${{ env.PACKAGE_NAME }}/
+        path: |
+          release-package/${{ env.PACKAGE_NAME }}/
+          release-package/${{ env.EXTENSION_NAME }}.aseprite-extension
         retention-days: 90
 
     - name: Upload ZIP to Release
@@ -188,4 +203,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: release-package/${{ env.PACKAGE_NAME }}.zip
+        files: |
+          release-package/${{ env.PACKAGE_NAME }}.zip
+          release-package/${{ env.EXTENSION_NAME }}.aseprite-extension

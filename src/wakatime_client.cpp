@@ -3,6 +3,7 @@
 namespace
 {
     constexpr size_t kMaxHeartbeatQueueSize = 256;
+    constexpr size_t kMaxDebounceEntries = 256;
     constexpr auto kSameFileHeartbeatInterval = std::chrono::seconds(120);
     constexpr auto kSameFileWriteInterval = std::chrono::seconds(2);
 
@@ -26,7 +27,7 @@ WakaTimeClient::WakaTimeClient() : hSession(nullptr),
                                    totalSent(0),
                                    totalFailed(0)
 {
-    userAgent = "unity-wakatime/1.0 (Windows)";
+    userAgent = "creative-wakatime/" + Config::APP_VERSION + " (Windows)";
     machineName = GetMachineName();
 
     WT_LOG("[WakaTimeClient] Created for machine: " << machineName);
@@ -282,7 +283,34 @@ std::string WakaTimeClient::Base64Encode(const std::string &input)
     return encoded;
 }
 
-bool WakaTimeClient::SendHttpRequest(const std::string &jsonData)
+std::string WakaTimeClient::BuildUserAgent(const HeartbeatData &heartbeat) const
+{
+    // WakaTime 대시보드는 User-Agent 끝의 plugin 토큰으로 editor를 식별한다.
+    // 형식: creative-wakatime/{ver} (Windows) {editor} {plugin}/{ver}
+    const std::string base = "creative-wakatime/" + Config::APP_VERSION + " (Windows) ";
+
+    // editor 문자열에서 첫 토큰으로 어떤 도구인지 판단 ("Unity 2022.3" → "Unity").
+    std::string editorName = heartbeat.editor;
+    if (const size_t spacePos = editorName.find(' '); spacePos != std::string::npos)
+    {
+        editorName = editorName.substr(0, spacePos);
+    }
+
+    std::string lowered = editorName;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](const unsigned char c) { return static_cast<char>(::tolower(c)); });
+
+    if (lowered == "aseprite")
+    {
+        return base + "Aseprite aseprite-wakatime/" + Config::APP_VERSION;
+    }
+
+    // 기본값: Unity (editor 비어있을 때 포함)
+    const std::string editorToken = heartbeat.editor.empty() ? "Unity" : heartbeat.editor;
+    return base + editorToken + " unity-wakatime/" + Config::APP_VERSION;
+}
+
+bool WakaTimeClient::SendHttpRequest(const std::string &jsonData, const HeartbeatData &heartbeat)
 {
     if (!initialized || hSession == nullptr)
     {
@@ -323,7 +351,7 @@ bool WakaTimeClient::SendHttpRequest(const std::string &jsonData)
     // HTTP 헤더 설정
     std::string authHeader = "Authorization: Basic " + Base64Encode(apiKey + ":");
     std::string contentTypeHeader = "Content-Type: application/json";
-    std::string userAgentHeader = "User-Agent: " + userAgent;
+    std::string userAgentHeader = "User-Agent: " + BuildUserAgent(heartbeat);
     std::string machineHeader = "X-Machine-Name: " + machineName;
 
     // 와이드 문자로 변환해서 헤더 추가
@@ -429,7 +457,7 @@ void WakaTimeClient::SenderThreadFunction()
         }
 
         const std::string jsonData = HeartbeatToJson(heartbeat);
-        SendHttpRequest(jsonData);
+        SendHttpRequest(jsonData, heartbeat);
 
         // 연속 전송 레이트리밋. 종료 시 즉시 깨어나도록 wait_for 사용
         {
@@ -449,7 +477,7 @@ void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::strin
         return;
     }
 
-    // HeartbeatData 생성
+    // HeartbeatData 생성 (Unity 컨텍스트)
     HeartbeatData heartbeat;
     heartbeat.entity = filePath;
     heartbeat.project = projectName;
@@ -466,15 +494,28 @@ void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::strin
         heartbeat.editor = "Unity";
     }
 
+    EnqueueHeartbeat(heartbeat);
+}
+
+void WakaTimeClient::EnqueueHeartbeat(const HeartbeatData &heartbeat)
+{
+    if (!initialized)
+    {
+        WT_ERR("[WakaTimeClient] Not initialized, cannot enqueue heartbeat");
+        return;
+    }
+
     // 큐에 추가 (비동기 전송)
     {
         std::lock_guard<std::mutex> lock(queueMutex);
 
         const auto now = std::chrono::steady_clock::now();
-        const bool isSameContext = (heartbeat.entity == lastQueuedEntity && heartbeat.project == lastQueuedProject);
-        if (lastQueuedAt.time_since_epoch().count() != 0 && isSameContext)
+        // entity + project를 \x1f(unit separator)로 결합해 컨텍스트별 키 생성
+        const std::string key = heartbeat.entity + '\x1f' + heartbeat.project;
+
+        if (const auto it = lastQueuedByEntity.find(key); it != lastQueuedByEntity.end())
         {
-            const auto elapsed = now - lastQueuedAt;
+            const auto elapsed = now - it->second;
             const auto minInterval = heartbeat.is_write ? kSameFileWriteInterval : kSameFileHeartbeatInterval;
             if (elapsed < minInterval)
             {
@@ -487,9 +528,35 @@ void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::strin
             heartbeatQueue.pop(); // 메모리 폭주 방지를 위해 가장 오래된 heartbeat 제거
         }
         heartbeatQueue.push(heartbeat);
-        lastQueuedAt = now;
-        lastQueuedEntity = heartbeat.entity;
-        lastQueuedProject = heartbeat.project;
+        lastQueuedByEntity[key] = now;
+
+        // debounce 맵 무한 증가 방지: 상한 초과 시 만료(>heartbeat interval)된 엔트리 정리.
+        // 그래도 상한을 넘으면 가장 오래된 엔트리를 제거한다.
+        if (lastQueuedByEntity.size() > kMaxDebounceEntries)
+        {
+            for (auto it = lastQueuedByEntity.begin(); it != lastQueuedByEntity.end();)
+            {
+                if (now - it->second > kSameFileHeartbeatInterval)
+                {
+                    it = lastQueuedByEntity.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+
+            while (lastQueuedByEntity.size() > kMaxDebounceEntries)
+            {
+                auto oldest = lastQueuedByEntity.begin();
+                for (auto it = lastQueuedByEntity.begin(); it != lastQueuedByEntity.end(); ++it)
+                {
+                    if (it->second < oldest->second) oldest = it;
+                }
+                lastQueuedByEntity.erase(oldest);
+            }
+        }
+
         queueCv.notify_one();
     }
 }
@@ -521,7 +588,12 @@ std::string WakaTimeClient::GetMaskedApiKey() const
 
 bool WakaTimeClient::LoadApiKeyFromFile()
 {
-    const std::string configPath = "wakatime_config.txt";
+    const std::string configPath = Config::GetConfigFilePath();
+    if (configPath.empty())
+    {
+        WT_ERR("[WakaTimeClient] Failed to resolve config path (APPDATA missing)");
+        return false;
+    }
 
     std::ifstream file(configPath);
     if (!file.is_open())
@@ -533,7 +605,9 @@ bool WakaTimeClient::LoadApiKeyFromFile()
     std::getline(file, apiKey);
     file.close();
 
-    apiKey.erase(std::remove_if(apiKey.begin(), apiKey.end(), isspace), apiKey.end());
+    apiKey.erase(std::remove_if(apiKey.begin(), apiKey.end(),
+                                [](const unsigned char c) { return std::isspace(c) != 0; }),
+                 apiKey.end());
 
     if (apiKey.empty())
     {
@@ -547,7 +621,12 @@ bool WakaTimeClient::LoadApiKeyFromFile()
 
 bool WakaTimeClient::SaveApiKeyToFile(const std::string &key)
 {
-    const std::string configPath = "wakatime_config.txt";
+    const std::string configPath = Config::GetConfigFilePath();
+    if (configPath.empty())
+    {
+        WT_ERR("[WakaTimeClient] Failed to resolve config path (APPDATA missing)");
+        return false;
+    }
 
     std::ofstream file(configPath);
     if (!file.is_open())

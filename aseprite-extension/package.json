@@ -1,0 +1,14 @@
+{
+  "name": "creative-wakatime",
+  "displayName": "Creative WakaTime",
+  "description": "Tracks Aseprite editing/saving activity for Creative WakaTime (WakaTime). Writes local event files consumed by the Creative WakaTime tray app.",
+  "version": "2.0.0",
+  "author": {
+    "name": "hy"
+  },
+  "contributes": {
+    "scripts": [
+      { "path": "./wakatime.lua" }
+    ]
+  }
+}
