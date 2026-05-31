@@ -9,11 +9,16 @@
  */
 class FileWatcher {
 private:
+    // 감시 종류: Unity 프로젝트 폴더(재귀) vs 외부 이벤트 inbox 폴더(평면)
+    enum class Kind { Unity, Inbox };
+
     // 감시 중인 프로젝트 정보
     struct WatchedProject {
         std::string projectPath;        // 프로젝트 경로
         std::string projectName;        // 프로젝트 이름
         std::string unityVersion;       // 유니티 버전
+        Kind kind;                      // 감시 종류 (기본 Unity)
+        BOOL recursive;                 // 하위 디렉토리 포함 여부 (Unity: TRUE, Inbox: FALSE)
         HANDLE directoryHandle;         // 디렉토리 핸들
         std::thread watchThread;        // 감시 스레드
         std::atomic<bool> shouldStop;   // 스레드 종료 플래그
@@ -23,6 +28,8 @@ private:
         HANDLE ioEvent;
 
         WatchedProject() :
+            kind(Kind::Unity),
+            recursive(TRUE),
             directoryHandle(INVALID_HANDLE_VALUE),
             shouldStop(false),
             stopEvent(nullptr),
@@ -55,10 +62,14 @@ private:
     mutable std::mutex projectsMutex;  // 스레드 안전성을 위한 뮤텍스
     std::deque<FileChangeEvent> pendingEvents;
     mutable std::mutex pendingEventsMutex;
+    std::deque<std::string> pendingInboxFiles;     // inbox에서 감지된 .json 경로 큐
+    mutable std::mutex pendingInboxMutex;
     std::atomic<bool> notifyScheduled{false};  // PostMessage 코얼레싱 (큐 적재 통지 1회로 합침)
 
     // 파일 변경 이벤트 콜백 함수
     std::function<void(const FileChangeEvent&)> changeCallback;
+    // inbox에서 .json 파일이 감지될 때 호출 (전체 경로 전달)
+    std::function<void(const std::string&)> inboxCallback;
     // 큐에 이벤트가 적재되었음을 메인 스레드에 통지 (PostMessage 등)
     std::function<void()> notifyCallback;
 
@@ -106,7 +117,14 @@ public:
      * @param callback 통지 시 호출될 함수 (예: PostMessage)
      */
     void SetNotifyCallback(std::function<void()> callback);
-    
+
+    /**
+     * inbox 콜백 설정 (외부 이벤트 .json 파일이 감지될 때 호출).
+     * 콜백은 메인 스레드의 DrainPendingEvents 흐름에서 디스패치된다.
+     * @param callback .json 전체 경로를 받는 함수
+     */
+    void SetInboxCallback(std::function<void(const std::string&)> callback);
+
     /**
      * Unity 프로젝트 감시 시작
      * @param projectPath 감시할 프로젝트 경로
@@ -115,6 +133,14 @@ public:
      * @return 성공하면 true
      */
     bool StartWatching(const std::string& projectPath, const std::string& projectName, const std::string& unityVersion);
+
+    /**
+     * 외부 이벤트 inbox 폴더 감시 시작 (평면 구조, 비재귀).
+     * 폴더 내 .json 파일 생성/이름변경/수정 시 inboxCallback이 호출된다.
+     * @param inboxPath 감시할 inbox 폴더 경로 (예: %APPDATA%/creative-wakatime/events)
+     * @return 성공하면 true
+     */
+    bool StartWatchingInbox(const std::string& inboxPath);
     
     /**
      * 특정 프로젝트 감시 중지

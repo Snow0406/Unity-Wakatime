@@ -30,6 +30,80 @@ void FileWatcher::SetNotifyCallback(std::function<void()> callback)
     WT_LOG("[FileWatcher] Notify callback set");
 }
 
+void FileWatcher::SetInboxCallback(std::function<void(const std::string &)> callback)
+{
+    inboxCallback = std::move(callback);
+    WT_LOG("[FileWatcher] Inbox callback set");
+}
+
+bool FileWatcher::StartWatchingInbox(const std::string &inboxPath)
+{
+    std::lock_guard<std::mutex> lock(projectsMutex);
+
+    // 이미 감시 중인지 확인
+    for (const auto &project: watchedProjects)
+    {
+        if (project->projectPath == inboxPath) return true;
+    }
+
+    if (!fs::exists(inboxPath))
+    {
+        WT_ERR("[FileWatcher] Inbox path does not exist: " << inboxPath);
+        return false;
+    }
+
+    auto project = std::make_unique<WatchedProject>();
+    if (project->stopEvent == nullptr || project->ioEvent == nullptr)
+    {
+        WT_ERR("[FileWatcher] Failed to create watcher events for inbox: " << inboxPath);
+        return false;
+    }
+
+    project->projectPath = inboxPath;
+    project->projectName = "events";
+    project->kind = Kind::Inbox;
+    project->recursive = FALSE; // events 폴더는 평면 구조라 하위 트리 감시 불필요
+    project->shouldStop = false;
+
+    ZeroMemory(&project->overlapped, sizeof(OVERLAPPED));
+    project->overlapped.hEvent = project->ioEvent;
+    ZeroMemory(project->buffer, sizeof(project->buffer));
+
+    project->directoryHandle = CreateFileA(
+        inboxPath.c_str(),
+        FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+        nullptr
+    );
+
+    if (project->directoryHandle == INVALID_HANDLE_VALUE)
+    {
+        const DWORD error = GetLastError();
+        WT_ERR("[FileWatcher] Failed to open inbox directory: " << inboxPath << " (Error: " << error << ")");
+        return false;
+    }
+
+    WT_LOG("[FileWatcher] Started watching inbox at " << inboxPath);
+
+    WatchedProject *projectPtr = project.get();
+    try
+    {
+        project->watchThread = std::thread(&FileWatcher::WatchProjectThread, this, projectPtr);
+    }
+    catch (const std::system_error &e)
+    {
+        WT_ERR("[FileWatcher] Failed to start inbox watch thread: " << e.what());
+        return false;
+    }
+
+    watchedProjects.push_back(std::move(project));
+
+    return true;
+}
+
 bool FileWatcher::StartWatching(const std::string &projectPath, const std::string &projectName, const std::string &unityVersion)
 {
     std::lock_guard<std::mutex> lock(projectsMutex);
@@ -128,12 +202,12 @@ void FileWatcher::WatchProjectThread(WatchedProject *project)
         ResetEvent(project->ioEvent);
 
         // ReadDirectoryChangesW: 디렉토리 변경사항을 감지하는 핵심 함수
-        // TRUE: 하위 폴더도 감시
+        // recursive: Unity는 TRUE(하위 폴더 포함), inbox는 FALSE(평면 구조)
         const BOOL result = ReadDirectoryChangesW(
             project->directoryHandle,           // 디렉토리 핸들
             project->buffer,                    // 결과를 받을 버퍼
             sizeof(project->buffer),            // 버퍼 크기
-            TRUE,                               // 하위 디렉토리 포함
+            project->recursive,                 // 하위 디렉토리 포함 여부
             FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION | FILE_NOTIFY_CHANGE_FILE_NAME,
             &bytesReturned,                     // 받은 데이터 크기
             &project->overlapped,               // 비동기 I/O 구조체
@@ -233,49 +307,89 @@ void FileWatcher::ProcessFileChanges(char *buffer, DWORD bytesReturned, WatchedP
             std::replace(fullPath.begin(), fullPath.end(), '\\', '/');
             std::replace(fileName.begin(), fileName.end(), '\\', '/');
 
-            // 무시할 폴더인지 확인
-            bool shouldIgnore = false;
-            std::istringstream pathStream(fileName);
-            std::string segment;
-
-            while (std::getline(pathStream, segment, '/'))
+            if (project->kind == Kind::Inbox)
             {
-                if (ShouldIgnoreFolder(segment))
+                // inbox: IGNORE_FOLDERS/IsUnityFile 건너뛰고, .json 추가/이름변경/수정만 처리.
+                // Aseprite Lua sandbox에는 rename이 없어 .json에 직접 쓰며, 빈/미완성 파일은
+                // InboxBridge가 삭제하지 않고 다음 이벤트나 시작 스캔에서 재시도한다.
+                const bool relevantAction =
+                    (info->Action == FILE_ACTION_ADDED ||
+                     info->Action == FILE_ACTION_RENAMED_NEW_NAME ||
+                     info->Action == FILE_ACTION_MODIFIED);
+
+                const bool isJson = [&fileName]() {
+                    if (fileName.size() < 5) return false;
+                    std::string ext = fileName.substr(fileName.size() - 5);
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](const unsigned char c) { return static_cast<char>(::tolower(c)); });
+                    return ext == ".json";
+                }();
+
+                if (relevantAction && isJson)
                 {
-                    shouldIgnore = true;
-                    break;
+                    WT_LOG("[FileWatcher] Inbox event: " << fileName);
+
+                    {
+                        std::lock_guard<std::mutex> lock(pendingInboxMutex);
+                        while (pendingInboxFiles.size() >= kMaxPendingEvents)
+                        {
+                            pendingInboxFiles.pop_front();
+                        }
+                        pendingInboxFiles.emplace_back(std::move(fullPath));
+                    }
+
+                    if (notifyCallback && !notifyScheduled.exchange(true))
+                    {
+                        notifyCallback();
+                    }
                 }
             }
-
-            // Unity 파일이고 무시할 폴더가 아닌 경우에만 처리
-            if (!shouldIgnore && IsUnityFile(fileName))
+            else
             {
-                // FileChangeEvent 생성
-                FileChangeEvent event;
-                event.filePath = fullPath;
-                event.fileName = fileName;
-                event.projectPath = project->projectPath;
-                event.projectName = project->projectName;
-                event.unityVersion = project->unityVersion;
-                event.action = info->Action;
-                event.timestamp = std::chrono::system_clock::now();
+                // 무시할 폴더인지 확인
+                bool shouldIgnore = false;
+                std::istringstream pathStream(fileName);
+                std::string segment;
 
-                WT_LOG("[FileWatcher] Change" << ": " << fileName << " in " << project->projectName);
-
-                // 워커 스레드에서 직접 UI/앱 콜백을 호출하지 않고 큐에 적재
+                while (std::getline(pathStream, segment, '/'))
                 {
-                    std::lock_guard<std::mutex> lock(pendingEventsMutex);
-                    while (pendingEvents.size() >= kMaxPendingEvents)
+                    if (ShouldIgnoreFolder(segment))
                     {
-                        pendingEvents.pop_front();
+                        shouldIgnore = true;
+                        break;
                     }
-                    pendingEvents.emplace_back(std::move(event));
                 }
 
-                // 메인 스레드에 통지 (코얼레싱: 이미 예약돼 있으면 추가 post 생략)
-                if (notifyCallback && !notifyScheduled.exchange(true))
+                // Unity 파일이고 무시할 폴더가 아닌 경우에만 처리
+                if (!shouldIgnore && IsUnityFile(fileName))
                 {
-                    notifyCallback();
+                    // FileChangeEvent 생성
+                    FileChangeEvent event;
+                    event.filePath = fullPath;
+                    event.fileName = fileName;
+                    event.projectPath = project->projectPath;
+                    event.projectName = project->projectName;
+                    event.unityVersion = project->unityVersion;
+                    event.action = info->Action;
+                    event.timestamp = std::chrono::system_clock::now();
+
+                    WT_LOG("[FileWatcher] Change" << ": " << fileName << " in " << project->projectName);
+
+                    // 워커 스레드에서 직접 UI/앱 콜백을 호출하지 않고 큐에 적재
+                    {
+                        std::lock_guard<std::mutex> lock(pendingEventsMutex);
+                        while (pendingEvents.size() >= kMaxPendingEvents)
+                        {
+                            pendingEvents.pop_front();
+                        }
+                        pendingEvents.emplace_back(std::move(event));
+                    }
+
+                    // 메인 스레드에 통지 (코얼레싱: 이미 예약돼 있으면 추가 post 생략)
+                    if (notifyCallback && !notifyScheduled.exchange(true))
+                    {
+                        notifyCallback();
+                    }
                 }
             }
         }
@@ -299,7 +413,8 @@ bool FileWatcher::IsUnityFile(const std::string &fileName) const
     if (dotPos == std::string::npos) return false; // 확장자가 없으면 무시
 
     std::string extension = fileName.substr(dotPos);
-    std::transform(extension.begin(), extension.end(), extension.begin(), tolower); // 소문자로 변환
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](const unsigned char c) { return static_cast<char>(::tolower(c)); }); // 소문자로 변환
 
     const auto &extensions = Config::GetUnityExtensions();
     return extensions.find(extension) != extensions.end();
@@ -308,13 +423,15 @@ bool FileWatcher::IsUnityFile(const std::string &fileName) const
 bool FileWatcher::ShouldIgnoreFolder(const std::string &folderName) const
 {
     std::string normalizedFolder = folderName;
-    std::transform(normalizedFolder.begin(), normalizedFolder.end(), normalizedFolder.begin(), tolower);
+    std::transform(normalizedFolder.begin(), normalizedFolder.end(), normalizedFolder.begin(),
+                   [](const unsigned char c) { return static_cast<char>(::tolower(c)); });
 
     const auto &ignoreFolders = Config::GetIgnoreFolders();
     for (const auto &ignoreFolder: ignoreFolders)
     {
         std::string normalizedIgnore = ignoreFolder;
-        std::transform(normalizedIgnore.begin(), normalizedIgnore.end(), normalizedIgnore.begin(), tolower);
+        std::transform(normalizedIgnore.begin(), normalizedIgnore.end(), normalizedIgnore.begin(),
+                       [](const unsigned char c) { return static_cast<char>(::tolower(c)); });
         if (normalizedFolder == normalizedIgnore)
         {
             return true;
@@ -401,7 +518,7 @@ void FileWatcher::StopAllWatching()
 
 void FileWatcher::DrainPendingEvents(const size_t maxEvents)
 {
-    if (!changeCallback || maxEvents == 0)
+    if (maxEvents == 0)
     {
         return;
     }
@@ -409,29 +526,52 @@ void FileWatcher::DrainPendingEvents(const size_t maxEvents)
     // 드레인 시작 전에 예약 플래그를 내려, 이 시점 이후 도착하는 이벤트는 새 통지를 post하도록 한다.
     notifyScheduled.store(false);
 
-    std::vector<FileChangeEvent> localEvents;
     bool moreRemaining = false;
+
+    // 1) Unity 파일 변경 이벤트 드레인
+    if (changeCallback)
     {
-        std::lock_guard<std::mutex> lock(pendingEventsMutex);
-        if (pendingEvents.empty())
+        std::vector<FileChangeEvent> localEvents;
         {
-            return;
+            std::lock_guard<std::mutex> lock(pendingEventsMutex);
+            const size_t count = std::min(maxEvents, pendingEvents.size());
+            localEvents.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                localEvents.emplace_back(std::move(pendingEvents.front()));
+                pendingEvents.pop_front();
+            }
+
+            if (!pendingEvents.empty()) moreRemaining = true;
         }
 
-        const size_t count = std::min(maxEvents, pendingEvents.size());
-        localEvents.reserve(count);
-        for (size_t i = 0; i < count; ++i)
+        for (const auto &event: localEvents)
         {
-            localEvents.emplace_back(std::move(pendingEvents.front()));
-            pendingEvents.pop_front();
+            changeCallback(event);
         }
-
-        moreRemaining = !pendingEvents.empty();
     }
 
-    for (const auto &event: localEvents)
+    // 2) inbox(.json) 이벤트 드레인
+    if (inboxCallback)
     {
-        changeCallback(event);
+        std::vector<std::string> localInbox;
+        {
+            std::lock_guard<std::mutex> lock(pendingInboxMutex);
+            const size_t count = std::min(maxEvents, pendingInboxFiles.size());
+            localInbox.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                localInbox.emplace_back(std::move(pendingInboxFiles.front()));
+                pendingInboxFiles.pop_front();
+            }
+
+            if (!pendingInboxFiles.empty()) moreRemaining = true;
+        }
+
+        for (const auto &jsonPath: localInbox)
+        {
+            inboxCallback(jsonPath);
+        }
     }
 
     // maxEvents 한도로 다 비우지 못했으면 다음 처리를 위해 통지를 다시 예약
@@ -444,7 +584,13 @@ void FileWatcher::DrainPendingEvents(const size_t maxEvents)
 size_t FileWatcher::GetWatchedProjectCount() const
 {
     std::lock_guard<std::mutex> lock(projectsMutex);
-    return watchedProjects.size();
+    // inbox 감시는 Unity 프로젝트가 아니므로 카운트에서 제외
+    size_t count = 0;
+    for (const auto &project: watchedProjects)
+    {
+        if (project->kind == Kind::Unity) ++count;
+    }
+    return count;
 }
 
 std::vector<WatchedProjectInfo> FileWatcher::GetWatchedProjects() const
@@ -456,6 +602,7 @@ std::vector<WatchedProjectInfo> FileWatcher::GetWatchedProjects() const
 
     for (const auto &project: watchedProjects)
     {
+        if (project->kind != Kind::Unity) continue; // inbox 제외
         WatchedProjectInfo info;
         info.projectPath = project->projectPath;
         info.projectName = project->projectName;

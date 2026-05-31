@@ -3,6 +3,7 @@
 #include "globals.h"
 #include <winhttp.h>    // Windows HTTP API
 #include <queue>
+#include <unordered_map>
 #include <condition_variable>
 
 #pragma comment(lib, "winhttp.lib") // WinHTTP 라이브러리 링크
@@ -47,9 +48,9 @@ private:
     mutable std::mutex queueMutex;              // 큐 접근 동기화
     std::condition_variable queueCv;            // 큐 대기/통지 (busy-poll 제거)
     std::queue<HeartbeatData> heartbeatQueue;   // 전송 대기 큐
-    std::chrono::steady_clock::time_point lastQueuedAt;
-    std::string lastQueuedEntity;
-    std::string lastQueuedProject;
+    // entity+project별 마지막 적재 시각. Unity/Aseprite 파일이 번갈아 들어와도
+    // 서로의 debounce를 무효화하지 않도록 컨텍스트별로 분리한다.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> lastQueuedByEntity;
     std::thread senderThread;                   // 백그라운드 전송 스레드
     std::atomic<bool> shouldStop;               // 스레드 종료 플래그
     
@@ -104,9 +105,19 @@ private:
     /**
      * 실제 HTTP POST 요청 수행
      * @param jsonData 전송할 JSON 데이터
+     * @param heartbeat User-Agent 구성을 위한 heartbeat (editor 식별용)
      * @return 성공하면 true
      */
-    bool SendHttpRequest(const std::string& jsonData);
+    bool SendHttpRequest(const std::string& jsonData, const HeartbeatData& heartbeat);
+
+    /**
+     * heartbeat의 editor에 맞춰 WakaTime User-Agent 문자열을 구성한다.
+     * WakaTime 대시보드는 User-Agent로 editor/plugin을 식별하므로
+     * Unity/Aseprite를 분리해서 집계하려면 editor별로 다른 UA가 필요하다.
+     * @param heartbeat editor 정보를 담은 heartbeat
+     * @return User-Agent 문자열
+     */
+    std::string BuildUserAgent(const HeartbeatData& heartbeat) const;
     
     /**
      * 백그라운드 전송 스레드 함수
@@ -171,6 +182,14 @@ public:
      * @param event 파일 변경 이벤트
      */
     void SendHeartbeatFromEvent(const FileChangeEvent& event);
+
+    /**
+     * 외부에서 완성된 HeartbeatData를 전송 큐에 적재 (비동기).
+     * entity+project별 debounce를 적용하며, Unity 내부 경로와 Aseprite 등
+     * 외부(inbox) heartbeat가 공유하는 단일 진입점이다.
+     * @param heartbeat 적재할 heartbeat 데이터
+     */
+    void EnqueueHeartbeat(const HeartbeatData& heartbeat);
     
     /**
      * 전송 큐에 대기 중인 heartbeat 수

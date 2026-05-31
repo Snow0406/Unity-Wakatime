@@ -234,7 +234,8 @@ void ProcessMonitor::PollChanges(std::vector<UnityInstance>& started, std::vecto
 std::string ProcessMonitor::ExtractProjectPath(const std::string &commandLine)
 {
     std::string lowerCommandLine = commandLine;
-    std::transform(lowerCommandLine.begin(), lowerCommandLine.end(), lowerCommandLine.begin(), tolower);
+    std::transform(lowerCommandLine.begin(), lowerCommandLine.end(), lowerCommandLine.begin(),
+                   [](const unsigned char c) { return static_cast<char>(::tolower(c)); });
 
     constexpr char projectPathArg[] = "-projectpath";
     size_t pos = lowerCommandLine.find(projectPathArg);

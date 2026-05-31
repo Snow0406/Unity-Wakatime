@@ -2,6 +2,7 @@
 #include "process_monitor.h"
 #include "file_watcher.h"
 #include "wakatime_client.h"
+#include "inbox_bridge.h"
 #include "tray_icon.h"
 #include "unity_focus_detector.h"
 #include "windows_dark_mode.h"
@@ -53,6 +54,35 @@ void OnFileChanged(const FileChangeEvent &event)
     }
 }
 
+void OnInboxHeartbeat(const HeartbeatData &heartbeat)
+{
+    if (!g_trayIcon) return;
+
+    g_trayIcon->IncrementHeartbeats();
+    const std::string editor = heartbeat.editor.empty() ? "Creative tool" : heartbeat.editor;
+    if (!heartbeat.project.empty())
+    {
+        g_trayIcon->SetActiveContext(editor + " - " + heartbeat.project);
+    }
+    else
+    {
+        g_trayIcon->SetActiveContext(editor);
+    }
+}
+
+// 외부 이벤트(.json) inbox 파일 처리 - Aseprite 등이 떨어뜨린 이벤트를 heartbeat로 변환
+void OnInboxFile(const std::string &jsonPath)
+{
+    if (!g_wakatimeClient) return;
+    if (!g_wakatimeClient->IsInitialized())
+    {
+        WT_LOG("[INBOX] ⚠️ Skipped - WakaTime client not initialized: " << jsonPath);
+        return;
+    }
+
+    InboxBridge::ProcessFile(jsonPath, g_wakatimeClient, OnInboxHeartbeat);
+}
+
 // 트레이 아이콘 콜백 함수들
 void OnTrayExit()
 {
@@ -101,7 +131,8 @@ void OnTrayShowSettings()
     {
         std::ostringstream settings;
         settings << "API Key: " << g_wakatimeClient->GetMaskedApiKey() << "\n"
-                << "Watching " << g_fileWatcher->GetWatchedProjectCount() << " Unity projects";
+                << "Unity projects watched: " << g_fileWatcher->GetWatchedProjectCount() << "\n"
+                << "Aseprite inbox: active";
 
         g_trayIcon->ShowInfoNotification(settings.str());
     }
@@ -169,8 +200,8 @@ void HandleNewUnityInstances(const std::vector<UnityInstance> &newInstances)
             if (g_trayIcon)
             {
                 g_trayIcon->SetCurrentProject(instance.projectName);
-                g_trayIcon->ShowInfoNotification("New Unity project: " + instance.projectName +
-                                                 " (Unity " + instance.editorVersion + ")");
+                g_trayIcon->ShowInfoNotification("Unity detected: " + instance.projectName +
+                                                 " (" + instance.editorVersion + ")");
             }
         }
         else
@@ -193,7 +224,7 @@ void HandleClosedUnityInstances(const std::vector<UnityInstance> &closedInstance
 
         if (g_trayIcon)
         {
-            g_trayIcon->ShowInfoNotification("Unity project closed: " + instance.projectName);
+            g_trayIcon->ShowInfoNotification("Unity closed: " + instance.projectName);
 
             // 다른 활성 프로젝트로 전환
             if (g_fileWatcher)
@@ -255,7 +286,7 @@ void CALLBACK FocusWinEventProc(HWINEVENTHOOK, const DWORD event, const HWND hwn
 
 int main()
 {
-    WT_LOG("[Main] Unity WakaTime Monitor Starting...");
+    WT_LOG("[Main] Creative WakaTime Monitor Starting...");
     const bool darkModeAvailable = WindowsDarkMode::EnableForApp();
     WT_LOG("[Main] Dark mode menu opt-in: "
               << (darkModeAvailable ? "enabled" : "not available"));
@@ -263,7 +294,7 @@ int main()
     TrayIcon trayIcon;
     g_trayIcon = &trayIcon;
 
-    if (!trayIcon.Initialize("Unity WakaTime"))
+    if (!trayIcon.Initialize("Creative WakaTime"))
     {
         WT_ERR("[Main] Failed to initialize tray icon!");
         return 1;
@@ -277,7 +308,7 @@ int main()
     trayIcon.SetShowSettingsCallback(OnTrayShowSettings);
     trayIcon.SetApiKeyChangeCallback(OnApiKeyChanged);
 
-    trayIcon.ShowInfoNotification("Unity WakaTime started !");
+    trayIcon.ShowInfoNotification("Creative WakaTime started !");
 
     WakaTimeClient wakatimeClient;
     g_wakatimeClient = &wakatimeClient;
@@ -294,11 +325,32 @@ int main()
     g_fileWatcher = &fileWatcher;
 
     fileWatcher.SetChangeCallback(OnFileChanged);
+    fileWatcher.SetInboxCallback(OnInboxFile);
     // 워커 스레드의 파일 변경 → 메인 스레드로 PostMessage 마샬링 (InitialScan 이전에 설치)
     fileWatcher.SetNotifyCallback([&trayIcon]()
     {
         trayIcon.NotifyFileEvent();
     });
+
+    // 외부 이벤트 inbox(%APPDATA%/creative-wakatime/events) 감시 시작 + 잔여 처리.
+    // 앱이 꺼진 동안 쌓인 이벤트는 ReadDirectoryChangesW가 통지하지 않으므로 시작 시 1회 스캔.
+    const std::string eventsDir = Config::GetEventsDir();
+    if (!eventsDir.empty())
+    {
+        if (fileWatcher.StartWatchingInbox(eventsDir))
+        {
+            WT_LOG("[Main] Watching external events inbox: " << eventsDir);
+        }
+        else
+        {
+            WT_ERR("[Main] Failed to watch events inbox: " << eventsDir);
+        }
+        InboxBridge::InitialScan(eventsDir, &wakatimeClient, OnInboxHeartbeat);
+    }
+    else
+    {
+        WT_ERR("[Main] Could not resolve events directory (APPDATA missing)");
+    }
 
     UnityFocusDetector unityFocusDetector;
     g_unityFocusDetector = &unityFocusDetector;
@@ -311,7 +363,7 @@ int main()
 
     trayIcon.SetMonitoringState(true);
 
-    WT_LOG("\n[Main] Unity WakaTime is now running in background!");
+    WT_LOG("\n[Main] Creative WakaTime is now running in background!");
 
     // 이벤트 허브 콜백 배선 (TrayIcon의 메시지 펌프에서 디스패치)
     trayIcon.SetFileEventCallback([]()
@@ -348,8 +400,8 @@ int main()
 
     if (focusHook) UnhookWinEvent(focusHook);
 
-    WT_LOG("\n[Main] Shutting down Unity WakaTime...");
-    trayIcon.ShowInfoNotification("Unity WakaTime shutting down...");
+    WT_LOG("\n[Main] Shutting down Creative WakaTime...");
+    trayIcon.ShowInfoNotification("Creative WakaTime shutting down...");
 
     // 남은 heartbeat 전송
     if (g_wakatimeClient)
@@ -372,6 +424,6 @@ int main()
 
     Globals::Cleanup();
 
-    WT_LOG("[Main] Unity WakaTime stopped gracefully.");
+    WT_LOG("[Main] Creative WakaTime stopped gracefully.");
     return 0;
 }

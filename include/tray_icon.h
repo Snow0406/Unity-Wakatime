@@ -35,7 +35,7 @@ private:
     
     // 상태 정보
     bool isMonitoring;               // 모니터링 활성 상태
-    std::string currentProject;      // 현재 활성 프로젝트
+    std::string activeContext;       // 현재 활성 컨텍스트(프로젝트/도구)
     int totalHeartbeats;             // 총 heartbeat 수
     bool initialized;                // 초기화 상태
     
@@ -145,10 +145,16 @@ public:
      * @param appName 애플리케이션 이름
      * @return 성공하면 true
      */
-    bool Initialize(const std::string& appName = "Unity WakaTime");
+    bool Initialize(const std::string& appName = "Creative WakaTime");
     
     /**
-     * 현재 프로젝트 설정 (툴팁 업데이트)
+     * 현재 활동 컨텍스트 설정 (툴팁 업데이트)
+     * @param contextName 프로젝트 또는 도구 이름
+     */
+    void SetActiveContext(const std::string& contextName);
+
+    /**
+     * 현재 프로젝트 설정 (이전 API 호환용)
      * @param projectName 프로젝트 이름
      */
     void SetCurrentProject(const std::string& projectName);
