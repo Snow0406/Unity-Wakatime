@@ -152,7 +152,7 @@ jobs:
       shell: msys2 {0}
       run: |
         PACKAGE_NAME="Creative-Wakatime_v${{ env.RELEASE_VERSION }}"
-        EXTENSION_NAME="creative-wakatime"
+        EXTENSION_NAME="creative-wakatime-aseprite"
         echo "📦 Creating release package: $PACKAGE_NAME"
 
         mkdir -p "release-package/$PACKAGE_NAME"
@@ -162,19 +162,19 @@ jobs:
         [ -f README.md ] && cp README.md "release-package/$PACKAGE_NAME/" || echo "README.md not found"
         [ -f LICENSE ] && cp LICENSE "release-package/$PACKAGE_NAME/" || echo "LICENSE not found"
 
-        # Aseprite extension은 별도 설치 가능한 .aseprite-extension(zip)으로 패키징
+        # Aseprite extension은 별도 설치 가능한 .zip으로 패키징
         if [ -d aseprite-extension ]; then
           mkdir -p release-package/aseprite-extension-build
           cp aseprite-extension/package.json release-package/aseprite-extension-build/
           cp aseprite-extension/wakatime.lua release-package/aseprite-extension-build/
-          (cd release-package/aseprite-extension-build && 7z a "../${EXTENSION_NAME}.aseprite-extension" package.json wakatime.lua)
+          (cd release-package/aseprite-extension-build && 7z a "../${EXTENSION_NAME}.zip" package.json wakatime.lua)
         else
           echo "aseprite-extension not found"
         fi
 
         echo "📋 Release package contents:"
         ls -la "release-package/$PACKAGE_NAME/"
-        ls -lh release-package/*.aseprite-extension || true
+        ls -lh release-package/*.zip || true
 
         echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
         echo "EXTENSION_NAME=$EXTENSION_NAME" >> $GITHUB_ENV
@@ -195,7 +195,7 @@ jobs:
         name: ${{ env.PACKAGE_NAME }}
         path: |
           release-package/${{ env.PACKAGE_NAME }}/
-          release-package/${{ env.EXTENSION_NAME }}.aseprite-extension
+          release-package/${{ env.EXTENSION_NAME }}.zip
         retention-days: 90
 
     - name: Upload ZIP to Release
@@ -205,4 +205,4 @@ jobs:
       with:
         files: |
           release-package/${{ env.PACKAGE_NAME }}.zip
-          release-package/${{ env.EXTENSION_NAME }}.aseprite-extension
+          release-package/${{ env.EXTENSION_NAME }}.zip

@@ -52,8 +52,8 @@
     - The app automatically detects and starts tracking
 
 4. **Aseprite** — Install the extension (optional):
-    - Download `creative-wakatime.aseprite-extension` from the same release.
-    - Double-click it, or install it from Aseprite via
+    - Download `creative-wakatime-aseprite.zip` from the same release.
+    - In Aseprite, go to
       **Edit > Preferences > Extensions > Add Extension**.
     - Restart Aseprite.
     - The extension writes local event files to `%APPDATA%/creative-wakatime/events/`.
@@ -91,7 +91,7 @@ created.
 If you are building from source instead of using the release asset, zip the
 contents of `aseprite-extension/` so that `package.json` and `wakatime.lua` are at
 the root of the archive, then rename the archive to
-`creative-wakatime.aseprite-extension`.
+`creative-wakatime-aseprite.zip`.
 
 You can also copy the folder manually:
 
