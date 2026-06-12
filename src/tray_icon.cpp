@@ -1,10 +1,26 @@
 #include "tray_icon.h"
 #include "file_watcher.h"
 #include "wakatime_client.h"
+#include "process_monitor.h"
+#include "app_registry.h"
 #include "windows_dark_mode.h"
 
 #include <wincodec.h>
 #include <comdef.h>
+
+namespace
+{
+    std::wstring Utf8ToWideTray(const std::string& s)
+    {
+        if (s.empty()) return L"";
+        const int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+        if (len <= 1) return L"";
+        std::wstring w(static_cast<size_t>(len), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), len);
+        w.resize(static_cast<size_t>(len - 1));
+        return w;
+    }
+}
 
 TrayIcon::TrayIcon() : hwnd(nullptr),
                        hMenu(nullptr),
@@ -160,7 +176,7 @@ HICON TrayIcon::LoadPngIcon(const std::string& filePath) {
 
     WT_LOG("[TrayIcon] ✅ WIC factory created successfully");
 
-    const std::wstring wFilePath(filePath.begin(), filePath.end());
+    const auto wFilePath = Utf8ToWideTray(filePath);
 
     // PNG 디코더 생성
     IWICBitmapDecoder* pDecoder = nullptr;
@@ -317,11 +333,19 @@ HMENU TrayIcon::CreateContextMenu()
 {
     const HMENU menu = CreatePopupMenu();
 
-    HMENU statusSubMenu = CreateStatusSubMenu();
-    AppendMenuW(menu, MF_STRING | MF_POPUP, (UINT_PTR) statusSubMenu, L"Status");
+    // 헤더 (비활성 타이틀)
+    AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, 0, L"Creative WakaTime");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    AppendMenuW(menu, MF_STRING, IDM_TOGGLE_MONITORING, L"Pause Monitoring");
+    HMENU trackedAppsSubMenu = CreateTrackedAppsSubMenu();
+    AppendMenuW(menu, MF_STRING | MF_POPUP, (UINT_PTR) trackedAppsSubMenu, L"Tracked Apps");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    HMENU statusSubMenu = CreateStatusSubMenu();
+    AppendMenuW(menu, MF_STRING | MF_POPUP, (UINT_PTR) statusSubMenu, L"Status");
+
+    AppendMenuW(menu, MF_STRING, IDM_TOGGLE_MONITORING,
+                isMonitoring ? L"Pause Monitoring" : L"Resume Monitoring");
     AppendMenuW(menu, MF_STRING, IDM_OPEN_DASHBOARD, L"Open Dashboard");
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"Setup API Key");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -329,6 +353,34 @@ HMENU TrayIcon::CreateContextMenu()
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
 
     return menu;
+}
+
+HMENU TrayIcon::CreateTrackedAppsSubMenu()
+{
+    const HMENU subMenu = CreatePopupMenu();
+
+    // 활성 앱 중 실행 중인 것 표시 (선택 앱만 스캔하므로 비활성 앱 실행 상태는 알 수 없음)
+    std::unordered_set<std::string> activeAppIds;
+    if (const auto *monitor = Globals::GetProcessMonitor())
+    {
+        activeAppIds = monitor->GetActiveAppIds();
+    }
+
+    const auto &apps = AppRegistry::All();
+    for (size_t i = 0; i < apps.size(); ++i)
+    {
+        const auto &def = apps[i];
+        const bool enabled = AppRegistry::IsEnabled(def.id);
+        const bool running = enabled && activeAppIds.count(def.id) > 0;
+
+        std::wstring label = Utf8ToWideTray(def.displayName);
+        if (running) label += L"   ● Running"; // ● running
+
+        const UINT flags = MF_STRING | (enabled ? MF_CHECKED : MF_UNCHECKED);
+        AppendMenuW(subMenu, flags, IDM_APP_BASE + static_cast<UINT>(i), label.c_str());
+    }
+
+    return subMenu;
 }
 
 
@@ -343,7 +395,7 @@ HMENU TrayIcon::CreateStatusSubMenu()
     // Active context
     if (!activeContext.empty())
     {
-        const std::wstring contextInfo = L"Active: " + std::wstring(activeContext.begin(), activeContext.end());
+        const std::wstring contextInfo = L"Active: " + Utf8ToWideTray(activeContext);
         AppendMenuW(subMenu, MF_STRING | MF_GRAYED, 0, contextInfo.c_str());
     } else
     {
@@ -372,35 +424,9 @@ HMENU TrayIcon::CreateStatusSubMenu()
 }
 
 
-void TrayIcon::UpdateContextMenu()
-{
-    if (!hMenu) return;
-
-    // 기존 서브메뉴 찾기 및 제거
-    if (const HMENU oldSubMenu = GetSubMenu(hMenu, 0))
-    {
-        RemoveMenu(hMenu, 0, MF_BYPOSITION);
-        DestroyMenu(oldSubMenu);
-    }
-
-    // 새로운 서브메뉴 생성 및 삽입
-    HMENU newStatusSubMenu = CreateStatusSubMenu();
-    InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING | MF_POPUP,
-                (UINT_PTR)newStatusSubMenu, L"Status");
-}
-
-void TrayIcon::OpenGitHubRepository() {
-    const auto githubUrl = "https://github.com/Snow0406/creative-wakatime";
-
-    const std::wstring wGithubUrl(githubUrl, githubUrl + strlen(githubUrl));
-    WT_LOG("[TrayIcon] Opening GitHub repository: " << githubUrl);
-
-    ShellExecuteW(nullptr, L"open", wGithubUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
 void TrayIcon::RefreshStatusMenu()
 {
-    UpdateContextMenu();
+    // 메뉴는 표시 시점(ShowContextMenu)에 매번 새로 빌드하므로 별도 갱신은 불필요.
 }
 
 
@@ -408,8 +434,7 @@ void TrayIcon::UpdateTooltip(const std::string &tooltip)
 {
     if (!initialized) return;
 
-    // std::string을 std::wstring으로 변환
-    std::wstring wTooltip(tooltip.begin(), tooltip.end());
+    auto wTooltip = Utf8ToWideTray(tooltip);
 
     // 툴팁 길이 제한 (Windows 제한)
     if (wTooltip.length() >= 128)
@@ -423,16 +448,18 @@ void TrayIcon::UpdateTooltip(const std::string &tooltip)
 
 void TrayIcon::ShowContextMenu(const int x, const int y)
 {
+    // 앱 활성/실행 상태가 동적이므로 표시할 때마다 메뉴를 새로 빌드한다.
+    if (hMenu)
+    {
+        DestroyMenu(hMenu);
+        hMenu = nullptr;
+    }
+    hMenu = CreateContextMenu();
     if (!hMenu)
     {
-        WT_LOG("[TrayIcon] hMenu is NULL!");
+        WT_LOG("[TrayIcon] Failed to rebuild context menu!");
         return;
     }
-
-    // 모니터링 상태에 따라 메뉴 텍스트 변경
-    ModifyMenuW(hMenu, IDM_TOGGLE_MONITORING, MF_BYCOMMAND | MF_STRING,
-                IDM_TOGGLE_MONITORING,
-                isMonitoring ? L"Pause Monitoring" : L"Resume Monitoring");
 
     SetForegroundWindow(hwnd);
 
@@ -456,6 +483,16 @@ void TrayIcon::ShowContextMenu(const int x, const int y)
 
 void TrayIcon::HandleMenuCommand(int menuId)
 {
+    // Tracked Apps 항목 (IDM_APP_BASE + index)
+    if (const auto &apps = AppRegistry::All();
+        menuId >= IDM_APP_BASE && menuId < IDM_APP_BASE + static_cast<int>(apps.size()))
+    {
+        const auto &def = apps[menuId - IDM_APP_BASE];
+        const bool newEnabled = !AppRegistry::IsEnabled(def.id);
+        if (onToggleApp) onToggleApp(def.id, newEnabled);
+        return;
+    }
+
     switch (menuId)
     {
         case IDM_SHOW_STATUS:
@@ -481,10 +518,6 @@ void TrayIcon::HandleMenuCommand(int menuId)
             }
             break;
 
-        case IDM_GITHUB:
-            OpenGitHubRepository();
-            break;
-
         case IDM_EXIT:
             if (onExit) onExit();
             break;
@@ -496,8 +529,8 @@ int TrayIcon::RunMessageLoop()
 {
     if (!initialized) return 0;
 
-    // 이벤트화 타이머 설치: 프로세스 스캔(10초), 포커스 유지 시 주기 heartbeat(2분)
-    SetTimer(hwnd, TIMER_PROCESS_SCAN, PROCESS_SCAN_INTERVAL_MS, nullptr);
+    // 포커스 유지 시 주기 heartbeat(2분)은 항상 설치.
+    // 프로세스 스캔 타이머는 활성 앱 수에 따라 SetProcessScanActive로 동적 제어한다.
     SetTimer(hwnd, TIMER_PERIODIC_HEARTBEAT, PERIODIC_HEARTBEAT_INTERVAL_MS, nullptr);
 
     // 정석 메시지 펌프: idle 시 GetMessage가 커널에서 블록되어 CPU ≈ 0.
@@ -515,6 +548,19 @@ int TrayIcon::RunMessageLoop()
     KillTimer(hwnd, TIMER_PERIODIC_HEARTBEAT);
 
     return static_cast<int>(msg.wParam);
+}
+
+void TrayIcon::SetProcessScanActive(const bool active)
+{
+    if (!initialized || hwnd == nullptr) return;
+    if (active)
+    {
+        SetTimer(hwnd, TIMER_PROCESS_SCAN, PROCESS_SCAN_INTERVAL_MS, nullptr);
+    }
+    else
+    {
+        KillTimer(hwnd, TIMER_PROCESS_SCAN);
+    }
 }
 
 void TrayIcon::NotifyFileEvent()
@@ -541,7 +587,7 @@ std::string TrayIcon::ShowApiKeyInputDialog()
     message += "3. API key will be read from clipboard\n\n";
     message += "Current API Key: " + (currentApiKey.empty() ? "Not set" : currentApiKey) + "\n\n";
 
-    const std::wstring wMessage(message.begin(), message.end());
+    const auto wMessage = Utf8ToWideTray(message);
 
     if (const int result = MessageBoxW(hwnd, wMessage.c_str(), L"WakaTime API Key Setup",
         MB_OKCANCEL | MB_ICONINFORMATION | MB_TOPMOST); result == IDOK)
@@ -679,9 +725,8 @@ void TrayIcon::ShowBalloonNotification(const std::string &title,
 {
     if (!initialized) return;
 
-    // 문자열을 와이드 문자로 변환
-    std::wstring wTitle(title.begin(), title.end());
-    std::wstring wMessage(message.begin(), message.end());
+    auto wTitle = Utf8ToWideTray(title);
+    auto wMessage = Utf8ToWideTray(message);
 
     // 길이 제한
     if (wTitle.length() >= 64) wTitle = wTitle.substr(0, 60) + L"...";
@@ -812,14 +857,14 @@ void TrayIcon::SetOpenDashboardCallback(const std::function<void()> &callback)
     onOpenDashboard = callback;
 }
 
-void TrayIcon::SetShowSettingsCallback(const std::function<void()> &callback)
-{
-    onShowSettings = callback;
-}
-
 void TrayIcon::SetApiKeyChangeCallback(const std::function<void(const std::string &)> &callback)
 {
     onApiKeyChange = callback;
+}
+
+void TrayIcon::SetToggleAppCallback(const std::function<void(const std::string &, bool)> &callback)
+{
+    onToggleApp = callback;
 }
 
 void TrayIcon::SetFileEventCallback(const std::function<void()> &callback)

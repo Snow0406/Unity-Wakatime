@@ -26,6 +26,8 @@
 #include <fstream>
 #include <algorithm>
 #include <cstdlib>
+#include <cctype>
+#include <utility>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -43,47 +45,38 @@ class WakaTimeClient;
 class FileWatcher;
 class ProcessMonitor;
 class TrayIcon;
-class UnityFocusDetector;
+class FocusDetector;
 
-struct UnityInstance
+struct AppInstance
 {
+    std::string appId;          // AppRegistry 정의 id
     DWORD processId;
-    std::string projectPath;
-    std::string projectName;
-    std::string editorVersion;
+    std::string projectPath;    // DirectoryWatch: 감시할 프로젝트 폴더
+    std::string projectName;    // 프로젝트/폴더 이름
+    std::string editorVersion;  // Unity 에디터 버전 등 (없으면 빈 값)
+    std::string entity;         // WindowTitle 앱의 초기 파일 경로 (커맨드라인에서 추출)
 };
 
 struct FileChangeEvent
 {
+    std::string appId;
     std::string filePath;
     std::string fileName;
     std::string projectPath;
     std::string projectName;
-    std::string unityVersion;
     DWORD action;
     std::chrono::system_clock::time_point timestamp;
 };
 
 struct WatchedProjectInfo {
+    std::string appId;
     std::string projectPath;
     std::string projectName;
-    std::string unityVersion;
+    std::string editorVersion;
 };
 
 namespace Config
 {
-    const std::vector<std::string> UNITY_FILE_EXTENSIONS = {
-        ".unity",
-        ".prefab",
-        ".asset",
-        ".mat",
-        ".shader",
-        ".hlsl",
-        ".anim",
-        ".controller",
-        ".json",
-    };
-
     const std::vector<std::string> IGNORE_FOLDERS = {
         "Library",
         "Temp",
@@ -103,28 +96,30 @@ namespace Config
     const std::string APP_NAME = "creative-wakatime";
     const std::string APP_VERSION = "2.0";
     const int HEARTBEAT_TIMEOUT_MS = 5000;
-    const int FILE_WATCHER_BUFFER_SIZE = 4096;
+    // 대량 import/save 시 ReadDirectoryChangesW 이벤트 유실을 줄이기 위한 큰 버퍼(64KB).
+    const int FILE_WATCHER_BUFFER_SIZE = 65536;
     const int HEARTBEAT_DEBOUNCE_MS = 2000;
-
-    /**
-     * 벡터를 unordered_set으로 변환 (컴파일 타임 최적화)
-     */
-    inline const std::unordered_set<std::string> &GetUnityExtensions()
-    {
-        static const auto extensions = std::unordered_set<std::string>(UNITY_FILE_EXTENSIONS.begin(),
-                                                                       UNITY_FILE_EXTENSIONS.end());
-        return extensions;
-    }
 
     inline const std::unordered_set<std::string> &GetIgnoreFolders()
     {
-        static const auto folders = std::unordered_set<std::string>(IGNORE_FOLDERS.begin(), IGNORE_FOLDERS.end());
+        static const auto folders = []()
+        {
+            std::unordered_set<std::string> result;
+            for (const auto &folder : IGNORE_FOLDERS)
+            {
+                std::string lower = folder;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](const unsigned char c) { return static_cast<char>(::tolower(c)); });
+                result.insert(std::move(lower));
+            }
+            return result;
+        }();
         return folders;
     }
 
     /**
      * 앱 데이터 디렉토리 경로 반환 (%APPDATA%/creative-wakatime/).
-     * 폴더가 없으면 events/ 하위까지 생성한다. 실패 시 빈 문자열.
+     * 폴더가 없으면 생성한다. 실패 시 빈 문자열.
      * @return 앱 데이터 디렉토리 경로 (끝에 구분자 없음), 실패 시 ""
      */
     inline std::string GetAppDataDir()
@@ -148,30 +143,6 @@ namespace Config
     }
 
     /**
-     * 이벤트 inbox 디렉토리 경로 반환 (%APPDATA%/creative-wakatime/events/).
-     * 폴더가 없으면 생성한다. 실패 시 빈 문자열.
-     */
-    inline std::string GetEventsDir()
-    {
-        const std::string base = GetAppDataDir();
-        if (base.empty())
-        {
-            return "";
-        }
-
-        const std::string dir = base + "\\events";
-
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        if (ec)
-        {
-            return "";
-        }
-
-        return dir;
-    }
-
-    /**
      * API 키 config 파일 경로 반환 (%APPDATA%/creative-wakatime/wakatime_config.txt).
      * 앱 데이터 디렉토리를 얻지 못하면 빈 문자열.
      */
@@ -185,14 +156,32 @@ namespace Config
 
         return base + "\\wakatime_config.txt";
     }
+
+    /**
+     * 추적 활성 앱 목록 파일 경로 (%APPDATA%/creative-wakatime/apps.txt).
+     * 앱 데이터 디렉토리를 얻지 못하면 빈 문자열.
+     */
+    inline std::string GetAppsConfigFilePath()
+    {
+        const std::string base = GetAppDataDir();
+        if (base.empty())
+        {
+            return "";
+        }
+
+        return base + "\\apps.txt";
+    }
 }
 
 extern WakaTimeClient *g_wakatimeClient;
 extern FileWatcher *g_fileWatcher;
 extern ProcessMonitor *g_processMonitor;
 extern TrayIcon *g_trayIcon;
-extern UnityFocusDetector *g_unityFocusDetector;
+extern FocusDetector *g_focusDetector;
 extern std::atomic<bool> g_shouldExit;
+// Pause Monitoring 전역 게이트. true면 모든 heartbeat enqueue를 차단한다.
+// (watcher/스캐너/포커스 추적은 계속 돌려 상태는 신선하게 유지)
+extern std::atomic<bool> g_monitoringPaused;
 
 namespace Globals
 {
@@ -224,9 +213,9 @@ namespace Globals
         return g_trayIcon;
     }
 
-    inline UnityFocusDetector *GetUnityFocusDetector() noexcept
+    inline FocusDetector *GetFocusDetector() noexcept
     {
-        return g_unityFocusDetector;
+        return g_focusDetector;
     }
 
     /**

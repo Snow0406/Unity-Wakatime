@@ -14,7 +14,7 @@
 #define IDM_TOGGLE_MONITORING 102    // 모니터링 토글 메뉴 ID
 #define IDM_OPEN_DASHBOARD 103       // WakaTime 대시보드 열기
 #define IDM_SETTINGS 104             // 설정 메뉴 ID
-#define IDM_GITHUB 105               // Github 링크
+#define IDM_APP_BASE 200             // Tracked Apps 항목 시작 ID (IDM_APP_BASE + index)
 
 // 타이머 ID 및 주기 (메시지 펌프 기반 이벤트화)
 #define TIMER_PROCESS_SCAN 1                 // Unity 프로세스 생성/종료 스캔
@@ -44,8 +44,8 @@ private:
     std::function<void()> onShowStatus;                         // 상태 보기 콜백
     std::function<void(bool)> onToggleMonitoring;               // 모니터링 토글 콜백
     std::function<void()> onOpenDashboard;                      // 대시보드 열기 콜백
-    std::function<void()> onShowSettings;                       // 설정 보기 콜백
     std::function<void(const std::string&)> onApiKeyChange;     // API 키 변경 콜백
+    std::function<void(const std::string&, bool)> onToggleApp;  // 앱 추적 토글 콜백 (appId, enabled)
 
     // 이벤트 허브 콜백 (메시지 펌프에서 디스패치)
     std::function<void()> onFileEvent;       // WM_APP_FILE_EVENT → 파일 이벤트 드레인
@@ -103,15 +103,11 @@ private:
     HMENU CreateStatusSubMenu();
 
     /**
-     * 컨텍스트 메뉴 동적 업데이트
+     * Tracked Apps 서브메뉴 생성 (앱별 체크박스 + 실행중 표시)
+     * @return 서브메뉴 핸들
      */
-    void UpdateContextMenu();
+    HMENU CreateTrackedAppsSubMenu();
 
-    /**
-     * GitHub 저장소 열기
-     */
-    void OpenGitHubRepository();
-    
     /**
      * 풍선 알림 표시
      * @param title 알림 제목
@@ -119,7 +115,7 @@ private:
      * @param timeout 표시 시간 (ms)
      * @param iconType 아이콘 타입
      */
-    void ShowBalloonNotification(const std::string& title, 
+    void ShowBalloonNotification(const std::string& title,
                                 const std::string& message,
                                 DWORD timeout = 3000,
                                 DWORD iconType = NIIF_INFO);
@@ -206,6 +202,12 @@ public:
     void RefreshStatusMenu();
 
     /**
+     * 프로세스 스캔 타이머 동적 제어 (활성 앱 수 0이면 끈다).
+     * @param active true면 TIMER_PROCESS_SCAN 설치, false면 해제
+     */
+    void SetProcessScanActive(bool active);
+
+    /**
      * 모니터링 상태 반환
      * @return 모니터링 중이면 true
      */
@@ -237,16 +239,16 @@ public:
     void SetOpenDashboardCallback(const std::function<void()> &callback);
 
     /**
-     * 설정 보기 콜백 설정
-     * @param callback 설정 보기 시 호출될 함수
-     */
-    void SetShowSettingsCallback(const std::function<void()> &callback);
-
-    /**
      * API Key 설정 콜백 함수 설정
      * @param callback API Key 변경 시 호출될 함수
      */
     void SetApiKeyChangeCallback(const std::function<void(const std::string&)> &callback);
+
+    /**
+     * 앱 추적 토글 콜백 설정 (Tracked Apps 항목 선택 시)
+     * @param callback (appId, enabled)를 받는 함수
+     */
+    void SetToggleAppCallback(const std::function<void(const std::string&, bool)> &callback);
 
     /**
      * 파일 변경 이벤트 처리 콜백 설정 (WM_APP_FILE_EVENT)

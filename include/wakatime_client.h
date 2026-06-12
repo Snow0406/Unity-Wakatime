@@ -6,28 +6,39 @@
 #include <unordered_map>
 #include <condition_variable>
 
+constexpr size_t kMaxBatchSize = 10;
+
 #pragma comment(lib, "winhttp.lib") // WinHTTP 라이브러리 링크
 
 /**
  * WakaTime Heartbeat 데이터 구조체
  */
 struct HeartbeatData {
-    std::string entity;             // 파일 경로
+    std::string entity;             // 파일/프로젝트 경로
     std::string type;               // "file"
     std::string category;           // "coding"
     std::string project;            // 프로젝트 이름
-    std::string language;           // Unity
-    std::string editor;             // "Unity"
+    std::string language;           // WakaTime language
+    std::string editor;             // "Unity 2022.3" 등
     std::string operating_system;   // "Windows"
     int64_t time;                   // Unix timestamp
     bool is_write;                  // 파일 수정 여부
+    int retryCount;                 // 전송 실패 재시도 횟수
 
-    HeartbeatData() : 
-        type("file"), 
+    HeartbeatData() :
+        type("file"),
         category("coding"),
         operating_system("Windows"),
         time(0),
-        is_write(false) {}
+        is_write(false),
+        retryCount(0) {}
+};
+
+struct BulkSendResult {
+    bool transportError = false;
+    int httpStatusCode = 0;
+    bool parseError = false;
+    std::vector<int> perItemStatus;
 };
 
 /**
@@ -110,10 +121,13 @@ private:
      */
     bool SendHttpRequest(const std::string& jsonData, const HeartbeatData& heartbeat);
 
+    std::string HeartbeatsToJsonArray(const std::vector<HeartbeatData>& heartbeats);
+    BulkSendResult SendBulkHttpRequest(const std::string& jsonData, const std::vector<HeartbeatData>& batch);
+    BulkSendResult ParseBulkResponse(const std::string& responseBody);
+
     /**
      * heartbeat의 editor에 맞춰 WakaTime User-Agent 문자열을 구성한다.
-     * WakaTime 대시보드는 User-Agent로 editor/plugin을 식별하므로
-     * Unity/Aseprite를 분리해서 집계하려면 editor별로 다른 UA가 필요하다.
+     * 형식: creative-wakatime/{ver} (Windows) {editor} creative-wakatime/{ver}
      * @param heartbeat editor 정보를 담은 heartbeat
      * @return User-Agent 문자열
      */
@@ -169,27 +183,29 @@ public:
     std::string GetMaskedApiKey() const;
     
     /**
-     * Heartbeat 전송 (비동기)
-     * @param filePath 파일 경로
-     * @param projectName 프로젝트 이름
-     * @param unityVersion 에디터 버전
+     * Heartbeat 전송 (비동기). appId로 앱 정의를 조회해 language/editor를 채운다.
+     * @param appId AppRegistry 정의 id
+     * @param entity 파일 또는 프로젝트 경로
+     * @param project 프로젝트 이름
+     * @param editorVersion 에디터 버전 (없으면 빈 값)
      * @param isWrite 파일 수정 여부
      */
-    void SendHeartbeat(const std::string& filePath, const std::string& projectName, const std::string& unityVersion, bool isWrite = true);
+    bool SendHeartbeat(const std::string& appId, const std::string& entity, const std::string& project,
+                       const std::string& editorVersion, bool isWrite = true);
     
     /**
      * FileChangeEvent에서 자동으로 Heartbeat 생성해서 전송
      * @param event 파일 변경 이벤트
      */
-    void SendHeartbeatFromEvent(const FileChangeEvent& event);
+    bool SendHeartbeatFromEvent(const FileChangeEvent& event);
 
     /**
      * 외부에서 완성된 HeartbeatData를 전송 큐에 적재 (비동기).
-     * entity+project별 debounce를 적용하며, Unity 내부 경로와 Aseprite 등
-     * 외부(inbox) heartbeat가 공유하는 단일 진입점이다.
+     * 모든 heartbeat 소스(파일 감시/포커스 추적)가 공유하는 단일 진입점이며,
+     * Pause 전역 게이트와 entity+project별 debounce를 여기서 적용한다.
      * @param heartbeat 적재할 heartbeat 데이터
      */
-    void EnqueueHeartbeat(const HeartbeatData& heartbeat);
+    bool EnqueueHeartbeat(const HeartbeatData& heartbeat);
     
     /**
      * 전송 큐에 대기 중인 heartbeat 수

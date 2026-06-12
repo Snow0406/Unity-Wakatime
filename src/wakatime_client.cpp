@@ -1,11 +1,150 @@
 #include "wakatime_client.h"
+#include "app_registry.h"
+
+#include <cctype>
 
 namespace
 {
     constexpr size_t kMaxHeartbeatQueueSize = 256;
     constexpr size_t kMaxDebounceEntries = 256;
+    constexpr DWORD kHttpResolveTimeoutMs = 5000;
+    constexpr DWORD kHttpConnectTimeoutMs = 10000;
+    constexpr DWORD kHttpSendTimeoutMs = 15000;
+    constexpr DWORD kHttpReceiveTimeoutMs = 15000;
+    constexpr int kMaxRetryAttempts = 3;
     constexpr auto kSameFileHeartbeatInterval = std::chrono::seconds(120);
     constexpr auto kSameFileWriteInterval = std::chrono::seconds(2);
+
+    size_t FindJsonArrayEnd(const std::string& text, const size_t openBracket)
+    {
+        int depth = 0;
+        bool inString = false;
+        bool escaped = false;
+
+        for (size_t i = openBracket; i < text.size(); ++i)
+        {
+            const char c = text[i];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (c == '\\')
+                {
+                    escaped = true;
+                }
+                else if (c == '"')
+                {
+                    inString = false;
+                }
+                continue;
+            }
+
+            if (c == '"')
+            {
+                inString = true;
+            }
+            else if (c == '[')
+            {
+                ++depth;
+            }
+            else if (c == ']')
+            {
+                --depth;
+                if (depth == 0) return i;
+            }
+        }
+
+        return std::string::npos;
+    }
+
+    bool TryParseBulkItemStatus(const std::string& text, const size_t itemStart, const size_t itemEnd, int& statusCode)
+    {
+        int bracketDepth = 0;
+        int braceDepth = 0;
+        bool inString = false;
+        bool escaped = false;
+
+        for (size_t i = itemStart; i <= itemEnd && i < text.size(); ++i)
+        {
+            const char c = text[i];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (c == '\\')
+                {
+                    escaped = true;
+                }
+                else if (c == '"')
+                {
+                    inString = false;
+                }
+                continue;
+            }
+
+            if (c == '"')
+            {
+                inString = true;
+            }
+            else if (c == '[')
+            {
+                ++bracketDepth;
+            }
+            else if (c == ']')
+            {
+                --bracketDepth;
+            }
+            else if (c == '{')
+            {
+                ++braceDepth;
+            }
+            else if (c == '}')
+            {
+                --braceDepth;
+            }
+            else if (c == ',' && bracketDepth == 1 && braceDepth == 0)
+            {
+                size_t pos = i + 1;
+                while (pos <= itemEnd && std::isspace(static_cast<unsigned char>(text[pos])) != 0)
+                {
+                    ++pos;
+                }
+
+                int sign = 1;
+                if (pos <= itemEnd && text[pos] == '-')
+                {
+                    sign = -1;
+                    ++pos;
+                }
+
+                if (pos > itemEnd || std::isdigit(static_cast<unsigned char>(text[pos])) == 0)
+                {
+                    return false;
+                }
+
+                int value = 0;
+                while (pos <= itemEnd && std::isdigit(static_cast<unsigned char>(text[pos])) != 0)
+                {
+                    value = value * 10 + (text[pos] - '0');
+                    ++pos;
+                }
+
+                statusCode = sign * value;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool IsRetryableStatus(const int statusCode)
+    {
+        return statusCode == 429 || statusCode >= 500;
+    }
 
     std::string WideToUtf8(const wchar_t *value)
     {
@@ -118,6 +257,15 @@ bool WakaTimeClient::InitializeHttpSession()
         const DWORD error = GetLastError();
         WT_ERR("[WakaTimeClient] WinHttpOpen failed (Error: " << error << ")");
         return false;
+    }
+
+    if (!WinHttpSetTimeouts(hSession,
+                            kHttpResolveTimeoutMs,
+                            kHttpConnectTimeoutMs,
+                            kHttpSendTimeoutMs,
+                            kHttpReceiveTimeoutMs))
+    {
+        WT_ERR("[WakaTimeClient] WinHttpSetTimeouts failed (Error: " << GetLastError() << ")");
     }
 
     // 연결 핸들을 한 번 생성해 heartbeat 간 재사용한다(keep-alive로 TLS 핸드셰이크 절감).
@@ -285,29 +433,9 @@ std::string WakaTimeClient::Base64Encode(const std::string &input)
 
 std::string WakaTimeClient::BuildUserAgent(const HeartbeatData &heartbeat) const
 {
-    // WakaTime 대시보드는 User-Agent 끝의 plugin 토큰으로 editor를 식별한다.
-    // 형식: creative-wakatime/{ver} (Windows) {editor} {plugin}/{ver}
     const std::string base = "creative-wakatime/" + Config::APP_VERSION + " (Windows) ";
-
-    // editor 문자열에서 첫 토큰으로 어떤 도구인지 판단 ("Unity 2022.3" → "Unity").
-    std::string editorName = heartbeat.editor;
-    if (const size_t spacePos = editorName.find(' '); spacePos != std::string::npos)
-    {
-        editorName = editorName.substr(0, spacePos);
-    }
-
-    std::string lowered = editorName;
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
-                   [](const unsigned char c) { return static_cast<char>(::tolower(c)); });
-
-    if (lowered == "aseprite")
-    {
-        return base + "Aseprite aseprite-wakatime/" + Config::APP_VERSION;
-    }
-
-    // 기본값: Unity (editor 비어있을 때 포함)
-    const std::string editorToken = heartbeat.editor.empty() ? "Unity" : heartbeat.editor;
-    return base + editorToken + " unity-wakatime/" + Config::APP_VERSION;
+    const std::string editorToken = heartbeat.editor.empty() ? "Unknown" : heartbeat.editor;
+    return base + editorToken + " creative-wakatime/" + Config::APP_VERSION;
 }
 
 bool WakaTimeClient::SendHttpRequest(const std::string &jsonData, const HeartbeatData &heartbeat)
@@ -434,15 +562,270 @@ bool WakaTimeClient::SendHttpRequest(const std::string &jsonData, const Heartbea
     return success;
 }
 
+std::string WakaTimeClient::HeartbeatsToJsonArray(const std::vector<HeartbeatData> &heartbeats)
+{
+    std::ostringstream json;
+    json << "[";
+    for (size_t i = 0; i < heartbeats.size(); ++i)
+    {
+        if (i > 0) json << ",";
+        json << HeartbeatToJson(heartbeats[i]);
+    }
+    json << "]";
+    return json.str();
+}
+
+BulkSendResult WakaTimeClient::ParseBulkResponse(const std::string &responseBody)
+{
+    BulkSendResult result;
+
+    const size_t responsesKey = responseBody.find("\"responses\"");
+    if (responsesKey == std::string::npos)
+    {
+        result.parseError = true;
+        return result;
+    }
+
+    const size_t responsesArrayStart = responseBody.find('[', responsesKey);
+    if (responsesArrayStart == std::string::npos)
+    {
+        result.parseError = true;
+        return result;
+    }
+
+    const size_t responsesArrayEnd = FindJsonArrayEnd(responseBody, responsesArrayStart);
+    if (responsesArrayEnd == std::string::npos)
+    {
+        result.parseError = true;
+        return result;
+    }
+
+    size_t pos = responsesArrayStart + 1;
+    while (pos < responsesArrayEnd)
+    {
+        while (pos < responsesArrayEnd && (std::isspace(static_cast<unsigned char>(responseBody[pos])) != 0 || responseBody[pos] == ','))
+        {
+            ++pos;
+        }
+        if (pos >= responsesArrayEnd) break;
+
+        if (responseBody[pos] != '[')
+        {
+            result.parseError = true;
+            return result;
+        }
+
+        const size_t itemEnd = FindJsonArrayEnd(responseBody, pos);
+        if (itemEnd == std::string::npos || itemEnd > responsesArrayEnd)
+        {
+            result.parseError = true;
+            return result;
+        }
+
+        int statusCode = 0;
+        if (!TryParseBulkItemStatus(responseBody, pos, itemEnd, statusCode))
+        {
+            result.parseError = true;
+            return result;
+        }
+
+        result.perItemStatus.push_back(statusCode);
+        pos = itemEnd + 1;
+    }
+
+    return result;
+}
+
+BulkSendResult WakaTimeClient::SendBulkHttpRequest(const std::string &jsonData, const std::vector<HeartbeatData> &batch)
+{
+    BulkSendResult result;
+
+    if (!initialized || hSession == nullptr)
+    {
+        WT_ERR("[WakaTimeClient] Not initialized");
+        result.transportError = true;
+        return result;
+    }
+    if (batch.empty())
+    {
+        result.parseError = true;
+        return result;
+    }
+
+    if (hConnect == nullptr)
+    {
+        hConnect = WinHttpConnect(hSession, L"api.wakatime.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (hConnect == nullptr)
+        {
+            const DWORD error = GetLastError();
+            WT_ERR("[WakaTimeClient] WinHttpConnect failed (Error: " << error << ")");
+            result.transportError = true;
+            return result;
+        }
+    }
+
+    const HINTERNET hRequest = WinHttpOpenRequest(
+        hConnect,
+        L"POST",
+        L"/api/v1/users/current/heartbeats.bulk",
+        nullptr,
+        WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
+        WINHTTP_FLAG_SECURE
+    );
+
+    if (hRequest == nullptr)
+    {
+        const DWORD error = GetLastError();
+        WT_ERR("[WakaTimeClient] WinHttpOpenRequest failed (Error: " << error << ")");
+        result.transportError = true;
+        return result;
+    }
+
+    const std::string authHeader = "Authorization: Basic " + Base64Encode(apiKey + ":");
+    const std::string contentTypeHeader = "Content-Type: application/json";
+    const std::string userAgentHeader = "User-Agent: " + BuildUserAgent(batch.front());
+    const std::string machineHeader = "X-Machine-Name: " + machineName;
+
+    const std::wstring wAuthHeader(authHeader.begin(), authHeader.end());
+    const std::wstring wContentTypeHeader(contentTypeHeader.begin(), contentTypeHeader.end());
+    const std::wstring wUserAgentHeader(userAgentHeader.begin(), userAgentHeader.end());
+    const std::wstring wMachineHeader(machineHeader.begin(), machineHeader.end());
+
+    WinHttpAddRequestHeaders(hRequest, wAuthHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
+    WinHttpAddRequestHeaders(hRequest, wContentTypeHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
+    WinHttpAddRequestHeaders(hRequest, wUserAgentHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
+    WinHttpAddRequestHeaders(hRequest, wMachineHeader.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
+
+    const BOOL sent = WinHttpSendRequest(
+        hRequest,
+        WINHTTP_NO_ADDITIONAL_HEADERS,
+        0,
+        (LPVOID) jsonData.c_str(),
+        static_cast<DWORD>(jsonData.length()),
+        static_cast<DWORD>(jsonData.length()),
+        0
+    );
+
+    if (!sent)
+    {
+        const DWORD error = GetLastError();
+        WT_ERR("[WakaTimeClient] WinHttpSendRequest failed (Error: " << error << ")");
+        result.transportError = true;
+        WinHttpCloseHandle(hRequest);
+        if (hConnect != nullptr)
+        {
+            WinHttpCloseHandle(hConnect);
+            hConnect = nullptr;
+        }
+        return result;
+    }
+
+    if (!WinHttpReceiveResponse(hRequest, nullptr))
+    {
+        WT_ERR("[WakaTimeClient] WinHttpReceiveResponse failed (Error: " << GetLastError() << ")");
+        result.transportError = true;
+        WinHttpCloseHandle(hRequest);
+        if (hConnect != nullptr)
+        {
+            WinHttpCloseHandle(hConnect);
+            hConnect = nullptr;
+        }
+        return result;
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    if (!WinHttpQueryHeaders(hRequest,
+                             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX,
+                             &statusCode,
+                             &statusCodeSize,
+                             WINHTTP_NO_HEADER_INDEX))
+    {
+        WT_ERR("[WakaTimeClient] WinHttpQueryHeaders failed (Error: " << GetLastError() << ")");
+        result.transportError = true;
+        WinHttpCloseHandle(hRequest);
+        if (hConnect != nullptr)
+        {
+            WinHttpCloseHandle(hConnect);
+            hConnect = nullptr;
+        }
+        return result;
+    }
+
+    result.httpStatusCode = static_cast<int>(statusCode);
+
+    std::string responseBody;
+    DWORD bytesAvailable = 0;
+    while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable) && bytesAvailable > 0)
+    {
+        std::string chunk(bytesAvailable, '\0');
+        DWORD bytesRead = 0;
+        if (!WinHttpReadData(hRequest, chunk.data(), bytesAvailable, &bytesRead))
+        {
+            WT_ERR("[WakaTimeClient] WinHttpReadData failed (Error: " << GetLastError() << ")");
+            result.transportError = true;
+            break;
+        }
+        chunk.resize(bytesRead);
+        responseBody += chunk;
+    }
+
+    WinHttpCloseHandle(hRequest);
+
+    if (result.transportError)
+    {
+        if (hConnect != nullptr)
+        {
+            WinHttpCloseHandle(hConnect);
+            hConnect = nullptr;
+        }
+        return result;
+    }
+
+    if (statusCode >= 200 && statusCode < 300)
+    {
+        BulkSendResult parsed = ParseBulkResponse(responseBody);
+        parsed.httpStatusCode = static_cast<int>(statusCode);
+        return parsed;
+    }
+
+    WT_LOG("[WakaTimeClient] Bulk heartbeat failed (HTTP " << statusCode << ")");
+    return result;
+}
+
 void WakaTimeClient::SenderThreadFunction()
 {
     WT_LOG("[WakaTimeClient] Sender thread started");
 
+    auto requeueHeartbeats = [this](std::vector<HeartbeatData> retryList)
+    {
+        if (retryList.empty()) return;
+
+        std::lock_guard<std::mutex> lock(queueMutex);
+        for (auto &heartbeat : retryList)
+        {
+            if (heartbeat.retryCount >= kMaxRetryAttempts)
+            {
+                ++totalFailed;
+                continue;
+            }
+
+            ++heartbeat.retryCount;
+            while (heartbeatQueue.size() >= kMaxHeartbeatQueueSize)
+            {
+                heartbeatQueue.pop();
+            }
+            heartbeatQueue.push(std::move(heartbeat));
+        }
+        queueCv.notify_one();
+    };
+
     while (true)
     {
-        HeartbeatData heartbeat;
+        std::vector<HeartbeatData> batch;
 
-        // 큐에 데이터가 들어오거나 종료될 때까지 블록 (busy-poll 제거)
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             queueCv.wait(lock, [this] { return shouldStop.load() || !heartbeatQueue.empty(); });
@@ -452,57 +835,114 @@ void WakaTimeClient::SenderThreadFunction()
                 break;
             }
 
-            heartbeat = heartbeatQueue.front();
-            heartbeatQueue.pop();
+            const size_t count = std::min(kMaxBatchSize, heartbeatQueue.size());
+            batch.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                batch.emplace_back(std::move(heartbeatQueue.front()));
+                heartbeatQueue.pop();
+            }
         }
 
-        const std::string jsonData = HeartbeatToJson(heartbeat);
-        SendHttpRequest(jsonData, heartbeat);
+        const std::string jsonData = HeartbeatsToJsonArray(batch);
+        const BulkSendResult result = SendBulkHttpRequest(jsonData, batch);
 
-        // 연속 전송 레이트리밋. 종료 시 즉시 깨어나도록 wait_for 사용
+        std::vector<HeartbeatData> retryList;
+        if (result.transportError || IsRetryableStatus(result.httpStatusCode))
+        {
+            retryList = std::move(batch);
+        }
+        else if (result.httpStatusCode >= 400 && result.httpStatusCode < 500)
+        {
+            totalFailed.fetch_add(static_cast<int>(batch.size()));
+        }
+        else if (result.httpStatusCode >= 200 && result.httpStatusCode < 300)
+        {
+            if (result.parseError || result.perItemStatus.size() != batch.size())
+            {
+                retryList = std::move(batch);
+            }
+            else
+            {
+                for (size_t i = 0; i < batch.size(); ++i)
+                {
+                    const int itemStatus = result.perItemStatus[i];
+                    if (itemStatus == 201 || itemStatus == 202)
+                    {
+                        ++totalSent;
+                    }
+                    else if (IsRetryableStatus(itemStatus))
+                    {
+                        retryList.push_back(std::move(batch[i]));
+                    }
+                    else
+                    {
+                        ++totalFailed;
+                    }
+                }
+            }
+        }
+        else
+        {
+            retryList = std::move(batch);
+        }
+
+        requeueHeartbeats(std::move(retryList));
+
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            queueCv.wait_for(lock, std::chrono::milliseconds(1000), [this] { return shouldStop.load(); });
+            queueCv.wait_for(lock, std::chrono::milliseconds(1000), [this]
+            {
+                return shouldStop.load() || heartbeatQueue.size() >= kMaxBatchSize;
+            });
         }
     }
 
     WT_LOG("[WakaTimeClient] Sender thread stopped");
 }
 
-void WakaTimeClient::SendHeartbeat(const std::string &filePath, const std::string &projectName, const std::string& unityVersion, const bool isWrite)
+bool WakaTimeClient::SendHeartbeat(const std::string &appId, const std::string &entity,
+                                   const std::string &project, const std::string &editorVersion,
+                                   const bool isWrite)
 {
     if (!initialized)
     {
         WT_ERR("[WakaTimeClient] Not initialized, cannot send heartbeat");
-        return;
+        return false;
     }
 
-    // HeartbeatData 생성 (Unity 컨텍스트)
     HeartbeatData heartbeat;
-    heartbeat.entity = filePath;
-    heartbeat.project = projectName;
-    heartbeat.language = "Unity";
+    heartbeat.entity = entity;
+    heartbeat.project = project;
     heartbeat.time = GetUnixTimestamp();
     heartbeat.is_write = isWrite;
 
-    if (!unityVersion.empty())
+    if (const AppDefinition *def = AppRegistry::FindById(appId))
     {
-        heartbeat.editor = "Unity " + unityVersion;
+        heartbeat.language = def->language;
+        heartbeat.editor = editorVersion.empty() ? def->editor : def->editor + " " + editorVersion;
     }
     else
     {
-        heartbeat.editor = "Unity";
+        heartbeat.language = "Unknown";
+        heartbeat.editor = "Unknown";
     }
 
-    EnqueueHeartbeat(heartbeat);
+    return EnqueueHeartbeat(heartbeat);
 }
 
-void WakaTimeClient::EnqueueHeartbeat(const HeartbeatData &heartbeat)
+bool WakaTimeClient::EnqueueHeartbeat(const HeartbeatData &heartbeat)
 {
     if (!initialized)
     {
         WT_ERR("[WakaTimeClient] Not initialized, cannot enqueue heartbeat");
-        return;
+        return false;
+    }
+
+    // Pause Monitoring 전역 게이트: 모든 소스(파일/포커스)의 heartbeat를 단일 chokepoint에서 차단.
+    if (g_monitoringPaused.load(std::memory_order_acquire))
+    {
+        return false;
     }
 
     // 큐에 추가 (비동기 전송)
@@ -519,7 +959,7 @@ void WakaTimeClient::EnqueueHeartbeat(const HeartbeatData &heartbeat)
             const auto minInterval = heartbeat.is_write ? kSameFileWriteInterval : kSameFileHeartbeatInterval;
             if (elapsed < minInterval)
             {
-                return;
+                return false;
             }
         }
 
@@ -559,13 +999,14 @@ void WakaTimeClient::EnqueueHeartbeat(const HeartbeatData &heartbeat)
 
         queueCv.notify_one();
     }
+
+    return true;
 }
 
-void WakaTimeClient::SendHeartbeatFromEvent(const FileChangeEvent &event)
+bool WakaTimeClient::SendHeartbeatFromEvent(const FileChangeEvent &event)
 {
-    // FileChangeEvent를 HeartbeatData로 변환
     const bool isWrite = (event.action == FILE_ACTION_MODIFIED || event.action == FILE_ACTION_ADDED || event.action == FILE_ACTION_RENAMED_NEW_NAME);
-    SendHeartbeat(event.filePath, event.projectName, event.unityVersion, isWrite);
+    return SendHeartbeat(event.appId, event.filePath, event.projectName, "", isWrite);
 }
 
 size_t WakaTimeClient::GetQueueSize() const

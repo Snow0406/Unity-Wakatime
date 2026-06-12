@@ -8,24 +8,24 @@ include_directories(include)
 
 set(SOURCES
         main.cpp
+        src/app_registry.cpp
         src/process_monitor.cpp
         src/file_watcher.cpp
         src/wakatime_client.cpp
-        src/inbox_bridge.cpp
         src/tray_icon.cpp
         src/windows_dark_mode.cpp
-        src/unity_focus_detector.cpp
+        src/focus_detector.cpp
 )
 
 set(HEADERS
         include/globals.h
+        include/app_registry.h
         include/process_monitor.h
         include/file_watcher.h
         include/wakatime_client.h
-        include/inbox_bridge.h
         include/tray_icon.h
         include/windows_dark_mode.h
-        include/unity_focus_detector.h
+        include/focus_detector.h
 )
 
 add_executable(creative_wakatime ${SOURCES} ${HEADERS})
@@ -74,7 +74,7 @@ if(WIN32)
 
     # Release 모드 설정 (중복 제거 및 정리)
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        if(MSVC)
+    if(MSVC)
             # MSVC: Windows 서브시스템 설정
             set_property(TARGET creative_wakatime PROPERTY WIN32_EXECUTABLE TRUE)
             target_link_options(creative_wakatime PRIVATE
